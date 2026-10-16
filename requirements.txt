@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+websockets
+pydantic
+requests
+beautifulsoup4
+python-dotenv
+python-multipart
