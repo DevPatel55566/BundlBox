@@ -55,9 +55,9 @@ AGENT_DEFAULT_PASSWORD = os.getenv("AGENT_DEFAULT_PASSWORD", "")
 # ↓↓↓ THIS IS THE MISSING BLOCK ↓↓↓
 SMS_API_URL = os.getenv("SMS_API_URL", "https://sms.telico.cloud/api/send_sms")
 MMS_API_URL = os.getenv("MMS_API_URL", "https://sms.telico.cloud/api/send_mms")
-SMS_USERNAME = os.getenv("SMS_USERNAME", "patelsanjay147@gmail.com")
-SMS_PASSWORD = os.getenv("SMS_PASSWORD", "Pw123456#")
-SMS_SOURCE_DID = os.getenv("SMS_SOURCE_DID", "6478123085")
+SMS_USERNAME = os.getenv("SMS_USERNAME", "gaurav.sehdev@bundlbox.ca")
+SMS_PASSWORD = os.getenv("SMS_PASSWORD", "Canada7272$#@")
+SMS_SOURCE_DID = os.getenv("SMS_SOURCE_DID", "8008470236")
 SMS_THROTTLE_SECONDS = float(os.getenv("SMS_THROTTLE_SECONDS", "1.0"))
 # ↑↑↑ THIS IS THE MISSING BLOCK ↑↑↑
 
