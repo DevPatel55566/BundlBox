@@ -5,7 +5,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 
-import requests
+import requests  # pyright: ignore[reportMissingModuleSource]
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger("telico_client")

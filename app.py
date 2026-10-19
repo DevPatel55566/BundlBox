@@ -52,14 +52,14 @@ WALLBOARD_USERNAME = os.getenv("WALLBOARD_USERNAME", "wallboard")
 WALLBOARD_PASSWORD = os.getenv("WALLBOARD_PASSWORD", "wallboard")
 AGENT_DEFAULT_PASSWORD = os.getenv("AGENT_DEFAULT_PASSWORD", "")
 
-# ↓↓↓ THIS IS THE MISSING BLOCK ↓↓↓
+# ----------------------------------------------------------------- SMS / MMS config
+# Hardcoded credentials removed. These MUST be set in your .env file or Render Environment Variables.
 SMS_API_URL = os.getenv("SMS_API_URL", "https://sms.telico.cloud/api/send_sms")
 MMS_API_URL = os.getenv("MMS_API_URL", "https://sms.telico.cloud/api/send_mms")
-SMS_USERNAME = os.getenv("SMS_USERNAME", "gaurav.sehdev@bundlbox.ca")
-SMS_PASSWORD = os.getenv("SMS_PASSWORD", "Canada7272$#@")
-SMS_SOURCE_DID = os.getenv("SMS_SOURCE_DID", "8008470236")
+SMS_USERNAME = os.getenv("SMS_USERNAME", "")
+SMS_PASSWORD = os.getenv("SMS_PASSWORD", "")
+SMS_SOURCE_DID = os.getenv("SMS_SOURCE_DID", "")
 SMS_THROTTLE_SECONDS = float(os.getenv("SMS_THROTTLE_SECONDS", "1.0"))
-# ↑↑↑ THIS IS THE MISSING BLOCK ↑↑↑
 
 STATUSES = ["Login / Available", "Logout / Offline", "Admin / Wrap Up",
             "Break / Lunch", "Outbound"]
@@ -517,25 +517,16 @@ async def break_expiry_loop():
 
 
 # ---------------------------------------------------------------- SMS sender
-# This mirrors the logic from mms.py — same timeouts, same fallback behaviour.
 
 def _send_sms_or_mms(destination: str, message: str, media_input: str = "") -> dict:
-    """
-    Send SMS or MMS via Telico.
-    - If `media_input` is a local file path → uploads it as MMS (10s timeout)
-    - If `media_input` is an http(s) URL    → sends it as MMS (30s timeout)
-    - On any MMS failure → falls back to plain SMS (30s timeout)
-    Returns: {"ok": bool, "channel": str, "error": str}
-    """
     if not (SMS_USERNAME and SMS_PASSWORD and SMS_SOURCE_DID):
-        return {"ok": False, "channel": "", "error": "SMS not configured"}
+        return {"ok": False, "channel": "", "error": "SMS not configured (missing credentials)"}
 
     auth = HTTPBasicAuth(SMS_USERNAME, SMS_PASSWORD)
     media_val = (media_input or "").strip()
     mms_success = False
     mms_error = ""
 
-    # ---- Try MMS first if media provided
     if media_val:
         is_local_file = not media_val.startswith("http://") and not media_val.startswith("https://")
 
@@ -577,7 +568,6 @@ def _send_sms_or_mms(destination: str, message: str, media_input: str = "") -> d
             except Exception as e:
                 mms_error = f"MMS (URL) exception: {e}"
 
-    # ---- SMS fallback (also the primary channel if no media)
     sms_payload = {
         "source_did": SMS_SOURCE_DID,
         "destination": destination,
@@ -596,10 +586,6 @@ def _send_sms_or_mms(destination: str, message: str, media_input: str = "") -> d
 
 
 def _parse_recipients_csv(raw_bytes: bytes) -> list[dict]:
-    """
-    Parse uploaded CSV. Expects `name` and `phone` columns (case-insensitive).
-    Any other columns are ignored.
-    """
     text = raw_bytes.decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
@@ -619,7 +605,6 @@ def _parse_recipients_csv(raw_bytes: bytes) -> list[dict]:
 
 
 def _parse_recipients_text(text: str) -> list[dict]:
-    """Parse pasted lines: 'name,phone' | 'phone,name' | 'phone'."""
     out = []
     for line in text.splitlines():
         line = line.strip()
@@ -961,10 +946,10 @@ async def api_debug_agent(agent_id: int, request: Request):
 async def api_sms_send(
     request: Request,
     message_template: str = Form(...),
-    media_mode: str = Form("none"),        # "none" | "upload" | "path"
-    media_path: str = Form(""),            # used when media_mode == "path" (URL or server path)
+    media_mode: str = Form("none"),
+    media_path: str = Form(""),
     media_file: UploadFile | None = File(None),
-    recip_mode: str = Form("csv"),         # "csv" | "paste"
+    recip_mode: str = Form("csv"),
     recipients_text: str = Form(""),
     recipients_csv: UploadFile | None = File(None),
 ):
@@ -975,7 +960,6 @@ async def api_sms_send(
     if not message_template.strip():
         raise HTTPException(400, "Message template is empty")
 
-    # --- Resolve recipients
     recipients: list[dict] = []
     if recip_mode == "csv":
         if not recipients_csv or not recipients_csv.filename:
@@ -990,7 +974,6 @@ async def api_sms_send(
     if not recipients:
         raise HTTPException(400, "No valid recipients")
 
-    # --- Resolve media (single global media for everyone)
     resolved_media = ""
     if media_mode == "upload" and media_file and media_file.filename:
         safe_name = f"{secrets.token_hex(6)}_{Path(media_file.filename).name}"
@@ -1850,20 +1833,7 @@ def page_manager(request: Request):
 
 # ---------------------------------------------------------------- SMS page
 
-DEFAULT_SMS_TEMPLATE = (
-    "Merry Christmas and Happy Holidays {name}! "
-    "We are beyond excited to present to you our brand new, highly anticipated Holiday & Christmas Catalog! "
-    "This season, we have curated an extraordinary collection of exclusive gifts, festive decor, seasonal treats, "
-    "and limited-edition bundles designed to make your celebrations truly magical and unforgettable. "
-    "Whether you are looking for the perfect surprise for your loved ones, cozy winter upgrades for your home, "
-    "or special corporate holiday packages, our catalog has everything you need to spread joy and warmth. "
-    "Take a moment to browse through the attached digital catalog to discover incredible seasonal discounts, "
-    "early-bird specials, and VIP perks available only to our valued community members. "
-    "If you have any questions about availability, shipping deadlines, or custom gift wrapping, "
-    "please feel free to reply directly to this message or call our holiday hotline anytime. "
-    "Thank you for being such an important part of our family this year. "
-    "Wishing you and your family a wonderful holiday season filled with peace, love, and joy!"
-)
+DEFAULT_SMS_TEMPLATE = "Hello {name}, this is a test message from Bundl Box."
 
 SMS_SCRIPT = r"""
 // ---------------------------------------------------------------- state
@@ -1917,35 +1887,42 @@ async function previewCsv(file) {
 }
 function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-// ---------------------------------------------------------------- send
+// ---------------------------------------------------------------- helper
+function buildFormData(message, recipientsText, isTest = false) {
+  const fd = new FormData();
+  fd.append('message_template', message);
+  fd.append('media_mode', window.smsMediaMode);
+  
+  if (isTest) {
+    fd.append('recip_mode', 'paste');
+    fd.append('recipients_text', recipientsText);
+  } else {
+    fd.append('recip_mode', window.smsRecipMode);
+    if (window.smsRecipMode === 'csv') {
+      fd.append('recipients_csv', window.smsCsvFile, window.smsCsvFile.name);
+    } else {
+      fd.append('recipients_text', recipientsText);
+    }
+  }
+
+  if (window.smsMediaMode === 'upload') {
+    fd.append('media_file', window.smsMediaFile, window.smsMediaFile.name);
+  } else if (window.smsMediaMode === 'path') {
+    fd.append('media_path', document.getElementById('sms-media-path').value.trim());
+  }
+  return fd;
+}
+
+// ---------------------------------------------------------------- send bulk
 window.sendSmsBlast = async () => {
   const btn = document.getElementById('sms-send-btn');
   const template = document.getElementById('sms-template').value;
 
   if (!template.trim()) { showToast('Message template is empty', 'error'); return; }
 
-  const fd = new FormData();
-  fd.append('message_template', template);
-  fd.append('media_mode', window.smsMediaMode);
-  fd.append('recip_mode', window.smsRecipMode);
-
-  // Media
-  if (window.smsMediaMode === 'upload') {
-    if (!window.smsMediaFile) { showToast('Please choose a media file', 'error'); return; }
-    fd.append('media_file', window.smsMediaFile, window.smsMediaFile.name);
-  } else if (window.smsMediaMode === 'path') {
-    const p = document.getElementById('sms-media-path').value.trim();
-    if (!p) { showToast('Please enter a media URL or server path', 'error'); return; }
-    fd.append('media_path', p);
-  }
-
-  // Recipients
-  if (window.smsRecipMode === 'csv') {
-    if (!window.smsCsvFile) { showToast('Please choose a CSV file', 'error'); return; }
-    fd.append('recipients_csv', window.smsCsvFile, window.smsCsvFile.name);
-  } else {
-    fd.append('recipients_text', document.getElementById('sms-recipients-text').value);
-  }
+  if (window.smsMediaMode === 'upload' && !window.smsMediaFile) { showToast('Please choose a media file', 'error'); return; }
+  if (window.smsMediaMode === 'path' && !document.getElementById('sms-media-path').value.trim()) { showToast('Please enter a media URL or server path', 'error'); return; }
+  if (window.smsRecipMode === 'csv' && !window.smsCsvFile) { showToast('Please choose a CSV file', 'error'); return; }
 
   if (!confirm('Send this blast now?')) return;
 
@@ -1953,9 +1930,8 @@ window.sendSmsBlast = async () => {
   btn.textContent = 'Sending…';
 
   try {
-    const r = await fetch('/api/sms/send', {
-      method: 'POST', credentials: 'include', body: fd,
-    });
+    const fd = buildFormData(template, document.getElementById('sms-recipients-text').value, false);
+    const r = await fetch('/api/sms/send', { method: 'POST', credentials: 'include', body: fd });
     if (!r.ok) {
       const err = await r.json().catch(()=>({detail:r.statusText}));
       showToast('Send failed: ' + (err.detail || r.statusText), 'error');
@@ -1972,6 +1948,40 @@ window.sendSmsBlast = async () => {
   }
 };
 
+// ---------------------------------------------------------------- send test
+window.sendTestSms = async () => {
+  const btn = document.getElementById('sms-test-btn');
+  const phone = document.getElementById('sms-test-phone').value.trim();
+  const template = document.getElementById('sms-template').value;
+
+  if (!phone) { showToast('Please enter a test phone number', 'error'); return; }
+  if (!template.trim()) { showToast('Message template is empty', 'error'); return; }
+
+  if (window.smsMediaMode === 'upload' && !window.smsMediaFile) { showToast('Please choose a media file', 'error'); return; }
+  if (window.smsMediaMode === 'path' && !document.getElementById('sms-media-path').value.trim()) { showToast('Please enter a media URL or server path', 'error'); return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+
+  try {
+    const fd = buildFormData(template, phone, true);
+    const r = await fetch('/api/sms/send', { method: 'POST', credentials: 'include', body: fd });
+    if (!r.ok) {
+      const err = await r.json().catch(()=>({detail:r.statusText}));
+      showToast('Test failed: ' + (err.detail || r.statusText), 'error');
+      return;
+    }
+    const data = await r.json();
+    renderSmsResults(data);
+    showToast(`Test sent to ${phone}`, 'ok');
+  } catch (e) {
+    showToast('Test failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send Test';
+  }
+};
+
 // ---------------------------------------------------------------- reset
 window.clearSmsForm = () => {
   window.smsMediaFile = null;
@@ -1983,6 +1993,7 @@ window.clearSmsForm = () => {
   document.getElementById('sms-csv-preview').innerHTML = '';
   document.getElementById('sms-media-path').value = '';
   document.getElementById('sms-recipients-text').value = '';
+  document.getElementById('sms-test-phone').value = '';
   document.getElementById('sms-results').innerHTML = '<div class="sms-empty">No results yet.</div>';
   document.getElementById('sms-summary').style.display = 'none';
   setMediaMode('none');
@@ -2022,7 +2033,7 @@ SMS_BODY = f"""
     <div class="section-title">1 · Message</div>
     <div class="sms-field">
       <label class="sms-label">Message template</label>
-      <textarea id="sms-template" rows="9" class="mono">{DEFAULT_SMS_TEMPLATE}</textarea>
+      <textarea id="sms-template" rows="5" class="mono" placeholder="Type your message here...">{DEFAULT_SMS_TEMPLATE}</textarea>
       <div class="hint">Use <code>{{name}}</code> to insert each recipient's name.</div>
     </div>
 
@@ -2054,7 +2065,7 @@ SMS_BODY = f"""
       </div>
     </div>
 
-    <div class="section-title" style="margin-top:22px">3 · Recipients</div>
+    <div class="section-title" style="margin-top:22px">3 · Bulk Recipients</div>
     <div class="sms-field">
       <div class="sms-seg" id="sms-recip-seg">
         <button type="button" data-mode="csv"   class="active" onclick="setRecipMode('csv')">Upload CSV</button>
@@ -2073,15 +2084,24 @@ SMS_BODY = f"""
       </div>
 
       <div id="sms-recip-paste-panel" style="display:none">
-        <textarea id="sms-recipients-text" rows="8" class="mono"
-          placeholder="Alice Smith,6473959350&#10;Bob Jones,5145550102&#10;4378305930"></textarea>
+        <textarea id="sms-recipients-text" rows="5" class="mono"
+          placeholder="Alice Smith,6473959350&#10;Bob Jones,5145550102"></textarea>
         <div class="hint">One per line: <code>name,phone</code> or <code>phone,name</code> or just <code>phone</code>.</div>
       </div>
     </div>
 
-    <div class="sms-actions">
-      <button id="sms-send-btn" class="mass-btn green" onclick="sendSmsBlast()">Send blast</button>
-      <button class="reset-btn" onclick="clearSmsForm()">Clear</button>
+    <div class="section-title" style="margin-top:22px">4 · Quick Test</div>
+    <div class="sms-field">
+      <div style="display:flex; gap:10px;">
+        <input type="text" id="sms-test-phone" placeholder="Phone number (e.g. 4165551234)" style="flex:1;">
+        <button id="sms-test-btn" class="mass-btn green" onclick="sendTestSms()" style="padding:0 20px; white-space:nowrap;">Send Test</button>
+      </div>
+      <div class="hint">Sends a single message using the template and media above.</div>
+    </div>
+
+    <div class="sms-actions" style="border-top: 1px solid var(--border); padding-top: 20px;">
+      <button id="sms-send-btn" class="mass-btn green" onclick="sendSmsBlast()">Send Bulk Blast</button>
+      <button class="reset-btn" onclick="clearSmsForm()">Clear Form</button>
     </div>
   </div>
 
