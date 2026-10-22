@@ -13,6 +13,15 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger("telico_client")
 
+# FIXED: Safe timezone loading for Windows
+try:
+    from zoneinfo import ZoneInfo
+    TZ = ZoneInfo(os.getenv("TIMEZONE", "America/Toronto"))
+except Exception:
+    from datetime import timezone
+    TZ = timezone(timedelta(hours=-4))
+    logger.warning("tzdata not installed! Using fallback -4 offset. Run 'pip install tzdata'")
+
 BASE_URL = os.getenv("TELICO_BASE_URL", "https://as2.telico.ca").rstrip("/")
 USERNAME = os.getenv("TELICO_USERNAME", "")
 PASSWORD = os.getenv("TELICO_PASSWORD", "")
@@ -80,8 +89,6 @@ def _parse_duration(s: str) -> int:
     if len(nums) == 2: return nums[0] * 60 + nums[1]
     return nums[0] if nums else 0
 
-
-
 def fetch_queue_members(queue_id: int) -> list[dict]:
     html = _get(f"/features/queues/edit/?id={queue_id}")
     if not html: return []
@@ -107,7 +114,6 @@ def fetch_queue_members(queue_id: int) -> list[dict]:
         
         name_txt = re.sub(r"\s+", " ", em.group(2).strip()).strip(" -")
         
-        # THE FIX: Accurately parse the <select> dropdown for Available/Unavailable
         opt = sel.find("option", selected=True)
         available = False
         if opt:
@@ -207,6 +213,7 @@ def call_extension(phone_number: str, message_path: str = "") -> dict:
         return {"ok": ok, "status": r.status_code, "url": r.url, "sent": params}
     except Exception as e:
         return {"ok": False, "reason": str(e), "sent": params}
+
 def fetch_active_calls() -> dict:
     out = {name: {"waiting": 0, "longest_wait_seconds": 0} for name in QUEUE_IDS}
     html = _get("/features/queues/active/?new_page=0;hide_options=1;queue=0;sort=queue_start;descending=0;refresh=60")
@@ -218,7 +225,6 @@ def fetch_active_calls() -> dict:
         cells = row.find_all("td")
         if len(cells) < 3: continue
         
-        # Look at the whole row to find the queue name
         row_text = row.get_text(" ", strip=True).replace('\xa0', ' ')
         
         q_name = None
@@ -228,13 +234,11 @@ def fetch_active_calls() -> dict:
         
         if not q_name: continue
         
-        # The duration is always the last cell
         secs = _parse_duration(cells[-1].get_text(strip=True))
         out[q_name]["waiting"] += 1
         if secs > out[q_name]["longest_wait_seconds"]:
             out[q_name]["longest_wait_seconds"] = secs
     return out
-
 
 def fetch_today_calls() -> dict:
     """
@@ -247,7 +251,7 @@ def fetch_today_calls() -> dict:
         "Delivery Line": {"answered": 0, "missed": 0, "attempts": 0}
     }
     
-    now = datetime.now()
+    now = datetime.now(TZ)
     tomorrow = now + timedelta(days=1)
     today_start = now.strftime("%Y-%m-%d-0-0-0")
     tomorrow_start = tomorrow.strftime("%Y-%m-%d-0-0-0")
@@ -257,14 +261,13 @@ def fetch_today_calls() -> dict:
         "start_hour": 0, "start_minute": 0, "start_second": 0, "start_buffer": today_start,
         "end_year": tomorrow.year, "end_month": tomorrow.month, "end_day": tomorrow.day,
         "end_hour": 0, "end_minute": 0, "end_second": 0, "end_buffer": tomorrow_start,
-        "customer": CUSTOMER_ID, "recurse": "0", "status": "", # Empty status gets ALL calls (answered & missed)
+        "customer": CUSTOMER_ID, "recurse": "0", "status": "",
         "direction": "", "caller_match": "contains", "caller_number": "",
         "callername_match": "contains", "callername_number": "", "called_match": "contains",
         "called_number": "", "phone": "", "talktime_minimum": "0", "talktime_maximum": "No limit",
         "cost_minimum": "No limit", "cost_maximum": "No limit", "cost_customer": "scustomer",
         "include_tax": "1", "sort": "start", "descending": "0", "simple": "0", "stype": "",
         "archive": "0"
-        # Removed 'format': 'csv' so we get the HTML table with the links
     }
 
     try:
@@ -276,19 +279,16 @@ def fetch_today_calls() -> dict:
         soup = BeautifulSoup(r.text, "html.parser")
         calls = {}
         
-        # Telinta marks table rows with class "row1" or "row2"
         for row in soup.find_all("tr", class_=["row1", "row2"]):
             tds = row.find_all("td")
             if len(tds) < 3: continue
             
-            # 1. Extract the Unique Call ID from the link in the first column
             a_tag = tds[0].find("a")
             if not a_tag: continue
             m = CALLID_RE.search(a_tag.get("href", ""))
             if not m: continue
             callid = m.group(1)
             
-            # 2. Identify the Queue by scanning the row text
             row_text = row.get_text(" ", strip=True).lower()
             q_name = None
             if "english csr" in row_text: q_name = "English"
@@ -300,25 +300,18 @@ def fetch_today_calls() -> dict:
             if callid not in calls:
                 calls[callid] = {"queue": q_name, "answered": False, "attempts": 0}
                 
-            # 3. Extract Status and Direction
-            # Col 1 looks like: "Answer<br>Inbound" or "Busy<br>Internal"
             status_html = tds[1].decode_contents()
             parts = re.sub(r'<[^>]+>', '|', status_html).split("|")
             status = parts[0].strip().lower() if len(parts) > 0 else ""
             
-            # 4. Extract Called Number
-            # Col 2 looks like: "6047990926 "EnBrit. Columbia"<br>8008470236"
             numbers_html = tds[2].decode_contents()
             num_parts = re.sub(r'<[^>]+>', '|', numbers_html).split("|")
             called_text = num_parts[1].strip().lower() if len(num_parts) > 1 else ""
             
-            # A queue leg is just ringing the queue. An agent leg rings an extension.
             is_queue_leg = "csr" in called_text or "delivery" in called_text
             
-            # If an agent answered
             if status == "answer" and not is_queue_leg:
                 calls[callid]["answered"] = True
-            # If an agent rejected or missed
             elif status in ATTEMPT_STATUSES and not is_queue_leg:
                 calls[callid]["attempts"] += 1
                 
@@ -336,6 +329,7 @@ def fetch_today_calls() -> dict:
     except Exception as e:
         logger.error("CDR stats error: %s", e)
         return out
+
 def fetch_all() -> dict:
     if not is_configured():
         return {"ok": False, "reason": "not configured"}

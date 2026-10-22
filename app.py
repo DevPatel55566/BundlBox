@@ -29,6 +29,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message
 log = logging.getLogger("app")
 logging.getLogger("telico_client").setLevel(logging.INFO)
 
+# FIXED: Safe timezone loading for Windows
+try:
+    from zoneinfo import ZoneInfo
+    TZ = ZoneInfo(os.getenv("TIMEZONE", "America/Toronto"))
+except Exception:
+    from datetime import timezone
+    TZ = timezone(timedelta(hours=-4))
+    log.warning("tzdata not installed! Using fallback -4 offset. Run 'pip install tzdata'")
+
 DB_PATH = Path(os.getenv("DB_PATH", str(Path(__file__).parent / "cc.db")))
 SMS_UPLOAD_DIR = Path(os.getenv("SMS_UPLOAD_DIR", str(Path(__file__).parent / "sms_uploads")))
 SMS_UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
@@ -160,8 +169,11 @@ def home_for_role(role):
     if role == "agent": return "/agent"
     return "/login"
 
-def now_iso(): return datetime.now().isoformat(timespec="seconds")
-def today_str(): return datetime.now().strftime("%Y-%m-%d")
+def now_local():
+    return datetime.now(TZ).replace(tzinfo=None)
+
+def now_iso(): return now_local().isoformat(timespec="seconds")
+def today_str(): return now_local().strftime("%Y-%m-%d")
 
 def connect():
     c = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -217,7 +229,7 @@ def _set_queue_flag(agent_id: int, queue: str, on: bool):
     new = bool(on)
     if old == new: return
     conn.execute(f"UPDATE agents SET {col}=? WHERE id=?", (int(new), agent_id))
-    conn.execute("INSERT INTO queue_events (agent_id, queue, joined, at) VALUES (?,?,?,?)", (agent_id, queue, int(new), datetime.now().isoformat()))
+    conn.execute("INSERT INTO queue_events (agent_id, queue, joined, at) VALUES (?,?,?,?)", (agent_id, queue, int(new), now_iso()))
     conn.commit()
 
 def _is_pending(agent_id: int, queue: str) -> bool:
@@ -241,7 +253,7 @@ def _queue_seconds(agent_id: int) -> dict:
             if q in open_ts:
                 out[q] += int((at - open_ts[q]).total_seconds())
                 del open_ts[q]
-    now = datetime.now()
+    now = now_local()
     for q, ts in open_ts.items():
         out[q] += int((now - ts).total_seconds())
     return out
@@ -268,7 +280,7 @@ def agent_dict(row):
         if status == "Break / Lunch":
             end_time = datetime.fromisoformat(row["status_since"])
         else:
-            end_time = datetime.now()
+            end_time = now_local()
             
         today_midnight = end_time.replace(hour=0, minute=0, second=0, microsecond=0)
         if start < today_midnight:
@@ -279,7 +291,6 @@ def agent_dict(row):
         else:
             shift_duration = 0
 
-    # Calculate total break time today for this agent
     status_secs = _status_seconds(row["id"])
     total_break_seconds = status_secs.get("Break / Lunch", 0)
 
@@ -324,7 +335,7 @@ def apply_status(agent_id, new_status):
     row = conn.execute("SELECT status, shift_start FROM agents WHERE id=?", (agent_id,)).fetchone()
     if not row: return
     old_status = row["status"]
-    ts = datetime.now().isoformat()
+    ts = now_iso()
     conn.execute("UPDATE status_events SET ended_at=? WHERE agent_id=? AND ended_at IS NULL", (ts, agent_id))
     conn.execute("INSERT INTO status_events (agent_id, status, started_at) VALUES (?,?,?)", (agent_id, new_status, ts))
     
@@ -341,7 +352,7 @@ def _apply_telico_snapshot(snap):
     if not snap.get("ok"):
         _last_sync = {"at": now_iso(), "ok": False, "queues": {}, "phones": []}
         return
-    now = datetime.now()
+    now = now_local()
     for p in snap.get("phones", []):
         row = conn.execute("SELECT * FROM agents WHERE phone=?", (p["extension"],)).fetchone()
         if row is None:
@@ -417,7 +428,7 @@ async def _update_agent_status(agent_id: int, new: str, actor: str = "System"):
 
     if prev == "Break / Lunch" and new != "Break / Lunch":
         break_start = datetime.fromisoformat(row["status_since"])
-        now = datetime.now()
+        now = now_local()
         break_duration = now - break_start
         old_shift_start = datetime.fromisoformat(row["shift_start"])
         new_shift_start = old_shift_start + break_duration
@@ -507,7 +518,7 @@ async def telico_sync_loop():
 async def break_expiry_loop():
     while True:
         await asyncio.sleep(BREAK_CHECK_INTERVAL)
-        now = datetime.now()
+        now = now_local()
         try: rows = conn.execute("SELECT * FROM agents WHERE status='Break / Lunch' AND break_notified=0").fetchall()
         except: continue
         
@@ -750,12 +761,12 @@ async def ws_endpoint(ws: WebSocket):
     finally: await hub.leave(ws)
 
 def _status_seconds(agent_id):
-    start_today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start_today = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
     end_today = start_today + timedelta(days=1)
     out = {}
     for r in conn.execute("SELECT status,started_at,ended_at FROM status_events WHERE agent_id=?", (agent_id,)):
         start = datetime.fromisoformat(r["started_at"])
-        end = datetime.fromisoformat(r["ended_at"]) if r["ended_at"] else datetime.now()
+        end = datetime.fromisoformat(r["ended_at"]) if r["ended_at"] else now_local()
         start = max(start, start_today)
         end = min(end, end_today)
         if start >= end: continue
@@ -764,7 +775,7 @@ def _status_seconds(agent_id):
     return out
 
 def _queue_seconds(agent_id):
-    start_today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start_today = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
     end_today = start_today + timedelta(days=1)
     out = {q: 0 for q in QUEUES}
     open_ts = {}
@@ -783,7 +794,7 @@ def _queue_seconds(agent_id):
                 if start < end:
                     out[q] += int((end - start).total_seconds())
                 del open_ts[q]
-    now = datetime.now()
+    now = now_local()
     for q, start in open_ts.items():
         end = now
         start = max(start, start_today)
@@ -997,9 +1008,8 @@ tbody tr:last-child td { border-bottom:none; }
 .status-card .big { font-size: 28px; font-weight: 700; color: var(--accent); margin-bottom: 8px; }
 
 /* --- NEW SPLIT TIMERS --- */
-.status-card .timers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; border-top: 1px solid var(--border-strong); padding-top: 16px; }
-.status-card .timer-item { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; min-width: 0; padding: 16px 8px; border: 1px solid var(--border-strong); border-radius: 14px; background: rgba(11,17,32,0.38); }
-@media (max-width: 380px) { .status-card .timers { grid-template-columns: 1fr; } }
+.status-card .timers { display: flex; justify-content: space-around; margin-top: 20px; border-top: 1px solid var(--border-strong); padding-top: 16px; }
+.status-card .timer-item { display: flex; flex-direction: column; align-items: center; }
 .status-card .timer-lbl { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; margin-bottom: 6px; }
 .status-card .time { font-family: 'JetBrains Mono', monospace; font-size: 24px; font-weight: 700; color: var(--text); line-height: 1; }
 .status-card .time.orange { color: var(--orange); }
@@ -1007,19 +1017,7 @@ tbody tr:last-child td { border-bottom:none; }
 .action-btn { width: 100%; padding: 20px 16px; border-radius: 16px; font-size: 18px; font-weight: 700; border: 2px solid var(--border-strong); background: var(--elevated); color: var(--text); display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 12px; transition: all 0.2s; }
 .action-btn:hover:not([disabled]) { background: var(--hover); border-color: var(--text-muted); }
 .action-btn:active:not([disabled]) { transform: scale(0.98); }
-/* Keep disabled actions visibly button-shaped; only mute the unavailable action. */
-.action-btn[disabled] {
-  opacity: 0.48;
-  cursor: not-allowed;
-  border-color: var(--border-strong);
-  background: var(--elevated);
-  color: var(--text-muted);
-  box-shadow: none;
-}
-.action-btn[disabled]:hover {
-  background: var(--elevated);
-  border-color: var(--border-strong);
-}
+.action-btn[disabled] { opacity: 0.3; cursor: not-allowed; border-color: transparent; background: transparent; }
 .btn-clockin { border-color: #10b981; color: #10b981; background: rgba(16,185,129,0.05); }
 .btn-clockin:hover:not([disabled]) { background: rgba(16,185,129,0.15); border-color: #10b981; }
 .btn-clockout { color: var(--text-muted); }
@@ -1941,7 +1939,6 @@ window.switchTab = (t) => {
   if (t === 'summary') loadSummary();
   if (t === 'activity') loadActivity();
 };
-
 
 async function loadSummary(){
   const rows = await fetch('/api/reports/shift-summary', {credentials: 'include'}).then(r=>r.json()).catch(()=>[]);
