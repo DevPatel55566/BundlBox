@@ -1,203 +1,192 @@
-from datetime import datetime
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from utils import get_session, home_for_role
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
-)
+router = APIRouter()
 
-from models import QUEUES, STATUS_COLORS
+WALLBOARD_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: #0b1120; color: #f1f5f9; font-family:'Space Grotesk',system-ui,sans-serif; font-size:15px; }
+.wb-top { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 1px solid #1e293b; padding-bottom: 20px; margin-bottom: 30px; }
+.wb-brand { display: flex; align-items: center; gap: 16px; }
+.wb-brand-text { display: flex; flex-direction: column; }
+.wb-brand-live { color: #22d3ee; font-size: 14px; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; }
+.wb-brand-title { color: #f1f5f9; font-size: 56px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; }
+.wb-time-block { text-align: right; }
+.wb-time { color: #f1f5f9; font-size: 64px; font-weight: 700; font-family: 'JetBrains Mono', monospace; line-height: 1; }
+.wb-date { color: #94a3b8; font-size: 16px; letter-spacing: 0.1em; text-transform: uppercase; margin-top: 6px; font-weight: 600; }
 
+.queues { display:grid; grid-template-columns:repeat(3,1fr); gap:24px; margin-bottom: 30px; }
+@media (max-width: 1100px) { .queues { grid-template-columns:1fr; } }
 
-class QueueCard(QFrame):
-    def __init__(self, queue: str):
-        super().__init__()
-        self.queue = queue
-        self.level = "normal"
-        self._pulse_on = False
-        self.setMinimumSize(320, 220)
+.wb-card { background: #1e293b; border-radius: 8px; padding: 30px 36px; display: flex; flex-direction: column; position: relative; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+.wb-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 6px; }
+.wb-card:nth-child(1)::before { background: #3b82f6; }
+.wb-card:nth-child(2)::before { background: #f59e0b; }
+.wb-card:nth-child(3)::before { background: #06b6d4; }
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 16, 20, 16)
-        root.setSpacing(8)
+.wb-head { display: flex; justify-content: space-between; margin-bottom: 20px; }
+.wb-q-id { color: #94a3b8; font-size: 18px; font-weight: 600; letter-spacing: 0.1em; }
+.wb-range { color: #10b981; font-size: 16px; font-weight: 700; letter-spacing: 0.05em; }
+.wb-title { font-size: 64px; font-weight: 700; color: #f1f5f9; margin-bottom: 30px; letter-spacing: -0.02em; }
 
-        self.title = QLabel(queue)
-        f = QFont(); f.setPointSize(20); f.setBold(True)
-        self.title.setFont(f)
+.wb-big-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 30px; }
+.wb-stat-lbl { color: #94a3b8; font-size: 16px; font-weight: 600; letter-spacing: 0.08em; margin-bottom: 8px; }
+.wb-stat-big { font-size: 120px; font-weight: 700; line-height: 0.9; font-family: 'JetBrains Mono', monospace; }
+.wb-stat-big.white { color: #f1f5f9; }
+.wb-stat-big.orange { color: #f59e0b; }
 
-        self.waiting = QLabel("0")
-        f = QFont(); f.setPointSize(72); f.setBold(True)
-        self.waiting.setFont(f)
-        self.waiting.setAlignment(Qt.AlignCenter)
+.wb-small-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; border-top: 2px solid #334155; padding-top: 24px; }
+.wb-stat-sm-val { font-size: 48px; font-weight: 600; color: #f1f5f9; font-family: 'JetBrains Mono', monospace; margin-top: 8px; }
 
-        self.waiting_caption = QLabel("waiting")
-        self.waiting_caption.setAlignment(Qt.AlignCenter)
+.blink-red { animation: blinker 1s linear infinite; color: #ef4444 !important; }
+@keyframes blinker { 50% { opacity: 0; } }
 
-        self.meta = QLabel()
-        self.meta.setAlignment(Qt.AlignCenter)
+.wb-bottom { margin-top: 30px; padding-top: 20px; border-top: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
+.wb-all-queues { display: flex; align-items: center; gap: 16px; color: #94a3b8; font-size: 18px; font-weight: 600; letter-spacing: 0.1em; }
+.wb-all-queues .count { font-size: 32px; color: #f1f5f9; font-family: 'JetBrains Mono', monospace; }
+.wb-footer-right { display: flex; align-items: center; gap: 20px; }
+.wb-live { display: flex; align-items: center; gap: 8px; color: #94a3b8; font-size: 16px; font-family: 'JetBrains Mono', monospace; }
+.wb-live::before { content: ''; width: 10px; height: 10px; border-radius: 50%; background: #22d3ee; }
+.wb-btn-group { display: flex; gap: 10px; }
+.wb-btn { padding: 12px 20px; border: 1px solid #334155; border-radius: 4px; background: transparent; color: #f1f5f9; font-size: 16px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 0.05em; }
+.wb-btn:hover { background: #334155; }
+"""
 
-        root.addWidget(self.title, alignment=Qt.AlignCenter)
-        root.addWidget(self.waiting, alignment=Qt.AlignCenter)
-        root.addWidget(self.waiting_caption, alignment=Qt.AlignCenter)
-        root.addWidget(self.meta, alignment=Qt.AlignCenter)
-        self._apply_style()
+WALLBOARD_BODY = """
+<div style="padding: 22px 24px 28px;">
+  <div class="wb-top">
+    <div class="wb-brand"><div style="width:64px;height:64px;background:linear-gradient(135deg, #22d3ee, #0891b2);border-radius:12px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:24px;color:#fff;">BB</div>
+      <div class="wb-brand-text"><div class="wb-brand-live">LIVE OPERATIONS</div><div class="wb-brand-title">Queue Wallboard</div></div>
+    </div>
+    <div class="wb-time-block"><div class="wb-time" id="wb-time">00:00:00 AM</div><div class="wb-date" id="wb-date">—</div></div>
+  </div>
+  <div class="queues" id="queues"></div>
+  <div class="wb-bottom">
+    <div class="wb-all-queues"><span>ALL QUEUES</span><span class="count" id="wb-total-waiting">0</span><span>CALLS HOLDING</span></div>
+    <div class="wb-footer-right">
+      <div class="wb-live">LIVE • Updated <span id="wb-updated">--:--:--</span></div>
+      <div class="wb-btn-group">
+        <button class="wb-btn" onclick="window.location.reload()">↻ REFRESH</button>
+        <button class="wb-btn" onclick="location.href='/manager'">MANAGER VIEW</button>
+        <button class="wb-btn" onclick="location.href='/logout'">SIGN OUT</button>
+      </div>
+    </div>
+  </div>
+</div>
+"""
 
-    def update_metric(self, m):
-        self.waiting.setText(str(m.waiting))
-        self.meta.setText(
-            f"longest {m.longest_str()}   |   avail {m.available_agents}/{m.logged_in_agents}   |   SLA {m.sla:.0f}%"
-        )
-        new_level = m.level()
-        if new_level != self.level:
-            self.level = new_level
-            if new_level == "normal":
-                self._pulse_timer.stop()
-                self._pulse_on = False
-            else:
-                if not self._pulse_timer.isActive():
-                    self._pulse_timer.start(600)
-        self._apply_style()
+WALLBOARD_SCRIPT = r"""
+// Calls answered by these phone numbers must not count as agent answers.
+const EXCLUDED_ANSWERED_BY = new Set(['8008470236', '9059015353']);
 
-    def _apply_style(self):
-        base = "QFrame { background: #0f172a; border-radius: 14px; border: 4px solid %s; } QLabel { color: #f8fafc; }"
-        if self.level == "critical":
-            border = "#ef4444" if self._pulse_on else "#7f1d1d"
-        elif self.level == "warning":
-            border = "#eab308" if self._pulse_on else "#713f12"
-        else:
-            border = "#1e293b"
-        self.setStyleSheet(base % border)
-        if self.level == "critical":
-            self.waiting.setStyleSheet("color: #fecaca;")
-        elif self.level == "warning":
-            self.waiting.setStyleSheet("color: #fde68a;")
-        else:
-            self.waiting.setStyleSheet("color: #f8fafc;")
+function isExcludedAnsweredBy(call) {
+  if (String(call.direction || '').toLowerCase() === 'outbound') return false;
+  if (String(call.status || '').toLowerCase() !== 'answer') return false;
 
-    def _on_pulse(self):
-        self._pulse_on = not self._pulse_on
-        self._apply_style()
+  const destinationDigits = String(call.destination || '').replace(/\D/g, '');
+  return [...EXCLUDED_ANSWERED_BY].some(number => destinationDigits.includes(number));
+}
 
-    _pulse_timer = None
+function renderQueues(){
+  const wrap = document.getElementById('queues');
+  if (!wrap) return;
+  
+  // Calculate clean stats from recentCalls to match the Manager page
+  const queueStats = {
+      "French": { answered: 0, missed: 0 },
+      "English": { answered: 0, missed: 0 },
+      "Delivery Line": { answered: 0, missed: 0 }
+  };
 
+  if (state.recentCalls && state.recentCalls.length > 0) {
+      state.recentCalls.forEach(c => {
+          if (isExcludedAnsweredBy(c)) return;
+          const q = c.queue;
+          if (!queueStats[q]) return;
+          
+          if (String(c.direction || '').toLowerCase() !== 'outbound') {
+              if (String(c.status || '') === 'Answer') {
+                  queueStats[q].answered++;
+              } else {
+                  queueStats[q].missed++;
+              }
+          }
+      });
+  }
 
-# attach the pulse timer lazily (avoids double-start in __init__ ordering)
-def _attach_timer(card: QueueCard):
-    card._pulse_timer = QTimer(card)
-    card._pulse_timer.timeout.connect(card._on_pulse)
+  const totalWaiting = state.metrics.reduce((acc, m) => acc + (m.waiting || 0), 0);
+  const twEl = document.getElementById('wb-total-waiting');
+  if (twEl) twEl.textContent = totalWaiting;
 
+  const now = new Date();
+  const timeEl = document.getElementById('wb-time');
+  if (timeEl) timeEl.textContent = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+  const dateEl = document.getElementById('wb-date');
+  if (dateEl) dateEl.textContent = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' }).toUpperCase();
+  
+  const updEl = document.getElementById('wb-updated');
+  if (updEl && state.lastSync && state.lastSync.at) updEl.textContent = new Date(state.lastSync.at).toLocaleTimeString();
 
-class Wallboard(QWidget):
-    def __init__(self, store, fullscreen: bool = False):
-        super().__init__()
-        self.store = store
-        self.setWindowTitle("Contact Center Wallboard")
-        self.setStyleSheet("background: #020617;")
-        if fullscreen:
-            self.showFullScreen()
+  wrap.innerHTML = state.metrics.map(m => {
+    const info = state.lastSync && state.lastSync.queues ? state.lastSync.queues[m.queue] : null;
+    const avail = info ? info.available_count : 0;
+    const oldestHold = m.waiting ? fmtWait(m.longestWaitSeconds) : '—';
+    const waitClass = m.waiting > 0 ? 'blink-red' : '';
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(16)
+    // Use the filtered stats, fallback to backend metrics if recentCalls is empty
+    const qStat = queueStats[m.queue];
+    let displayCount = m.count || 0;
+    let displayMissed = m.missed || 0;
+    
+    if (state.recentCalls && state.recentCalls.length > 0 && qStat) {
+        displayCount = qStat.answered;
+        displayMissed = qStat.missed;
+    }
 
-        # header
-        header = QHBoxLayout()
-        self.title = QLabel("Contact Center Command Center")
-        f = QFont(); f.setPointSize(20); f.setBold(True)
-        self.title.setFont(f)
-        self.title.setStyleSheet("color: #e2e8f0;")
-        self.clock = QLabel()
-        f = QFont(); f.setPointSize(18)
-        self.clock.setFont(f)
-        self.clock.setStyleSheet("color: #94a3b8;")
-        header.addWidget(self.title)
-        header.addStretch()
-        header.addWidget(self.clock)
-        root.addLayout(header)
+    return `
+    <div class="wb-card">
+      <div class="wb-head"><div class="wb-q-id">QUEUE ${m.queue_id || '---'}</div><div class="wb-range">IN RANGE</div></div>
+      <div class="wb-title">${m.queue.replace(' Line', '')}</div>
+      
+      <div class="wb-big-stats">
+        <div><div class="wb-stat-lbl">TOTAL TODAY</div><div class="wb-stat-big white">${displayCount}</div></div>
+        <div><div class="wb-stat-lbl">MISSED TODAY</div><div class="wb-stat-big orange">${displayMissed}</div></div>
+      </div>
+      
+      <div class="wb-small-stats">
+        <div><div class="wb-stat-lbl">CALLS<br>HOLDING</div><div class="wb-stat-sm-val ${waitClass}">${m.waiting}</div></div>
+        <div><div class="wb-stat-lbl">OLDEST HOLD</div><div class="wb-stat-sm-val">${oldestHold}</div></div>
+        <div><div class="wb-stat-lbl">AGENTS<br>ONLINE</div><div class="wb-stat-sm-val">${avail}</div></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+onUpdate(renderQueues);
+setInterval(renderQueues, 1000);
+"""
 
-        # alert banner
-        self.banner = QLabel()
-        self.banner.setAlignment(Qt.AlignCenter)
-        f = QFont(); f.setPointSize(16); f.setBold(True)
-        self.banner.setFont(f)
-        self.banner.setVisible(False)
-        self.banner.setStyleSheet(
-            "background:#7f1d1d; color:#fee2e2; padding:12px; border-radius:10px;"
-        )
-        root.addWidget(self.banner)
-
-        # queue cards
-        cards = QHBoxLayout()
-        cards.setSpacing(16)
-        self.cards: dict[str, QueueCard] = {}
-        for q in QUEUES:
-            card = QueueCard(q)
-            _attach_timer(card)
-            self.cards[q] = card
-            cards.addWidget(card)
-        root.addLayout(cards)
-
-        # agent grid
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(
-            ["Agent", "Status", "Duration", "French", "English", "Delivery", "Shift Start"]
-        )
-        self.table.verticalHeader().setVisible(False)
-        self.table.setStyleSheet(
-            "QTableWidget { background:#0f172a; color:#e2e8f0; gridline-color:#1e293b; font-size:16px; }"
-            "QHeaderView::section { background:#1e293b; color:#cbd5e1; padding:8px; border:none; }"
-        )
-        self.table.horizontalHeader().setStretchLastSection(True)
-        root.addWidget(self.table, 1)
-
-        self.store.metrics_changed.connect(self._refresh_metrics)
-        self.store.agents_changed.connect(self._refresh_agents)
-
-        self._clock_timer = QTimer(self)
-        self._clock_timer.timeout.connect(self._tick)
-        self._clock_timer.start(1000)
-
-        self._refresh_metrics()
-        self._refresh_agents()
-
-    def _tick(self):
-        self.clock.setText(datetime.now().strftime("%a %b %d  %H:%M:%S"))
-        self._refresh_agents()
-
-    def _refresh_metrics(self):
-        for q, card in self.cards.items():
-            m = self.store.metrics.get(q)
-            if m:
-                card.update_metric(m)
-        worst = max(self.store.metrics.values(), key=lambda m: (m.level() != "normal", m.waiting))
-        if worst.level() == "critical":
-            self.banner.setText(
-                f"⚠  {worst.queue}: {worst.waiting} waiting, longest {worst.longest_str()} — CRITICAL"
-            )
-            self.banner.setVisible(True)
-        elif worst.level() == "warning":
-            self.banner.setText(
-                f"{worst.queue}: {worst.waiting} waiting, longest {worst.longest_str()}"
-            )
-            self.banner.setStyleSheet(
-                "background:#713f12; color:#fef3c7; padding:12px; border-radius:10px;"
-            )
-            self.banner.setVisible(True)
-        else:
-            self.banner.setVisible(False)
-
-    def _refresh_agents(self):
-        now = datetime.now()
-        self.table.setRowCount(len(self.store.agents))
-        for r, a in enumerate(self.store.agents):
-            self.table.setItem(r, 0, QTableWidgetItem(a.name))
-            st = QTableWidgetItem(a.status)
-            st.setForeground(Qt.white)
-            st.setBackground(Qt.GlobalColor.transparent)
-            self.table.setItem(r, 1, st)
-            self.table.setItem(r, 2, QTableWidgetItem(a.duration_str(now)))
-            self.table.setItem(r, 3, QTableWidgetItem("●" if a.french else ""))
-            self.table.setItem(r, 4, QTableWidgetItem("●" if a.english else ""))
-            self.table.setItem(r, 5, QTableWidgetItem("●" if a.delivery else ""))
-            self.table.setItem(r, 6, QTableWidgetItem(a.shift_start.strftime("%H:%M")))
+@router.get("/wallboard", response_class=HTMLResponse)
+def page_wallboard(request: Request):
+    sess = get_session(request)
+    if not sess: return RedirectResponse("/login", status_code=302)
+    if sess["role"] not in ("manager", "wallboard"): return RedirectResponse(home_for_role(sess["role"]), status_code=302)
+    
+    return f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wallboard · Bundl Box</title>
+<style>{WALLBOARD_CSS}</style>
+</head><body>
+{WALLBOARD_BODY}
+<script>
+const STATUSES = {json.dumps(STATUSES) if 'STATUSES' in globals() else '[]'}; const QUEUES = {json.dumps(QUEUES) if 'QUEUES' in globals() else '[]'};
+const state = {{ agents: [], metrics: [], telicoConfigured: false, breakLimitSeconds: 1800, lastSync: null, lastUpdate: Date.now(), schedule: null, recentCalls: [] }};
+const listeners = [];
+function onUpdate(fn){{ listeners.push(fn); }}
+function notify(){{ for (const fn of listeners) fn(state); }}
+function fmtWait(sec){{ const m=Math.floor(sec/60), s=sec%60; return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); }}
+(function connectWS(){{ const proto = location.protocol === 'https:' ? 'wss' : 'ws'; const ws = new WebSocket(proto+'://'+location.host+'/ws'); ws.onclose = () => {{ setTimeout(connectWS, 2000); }}; ws.onmessage = (e) => {{ const msg = JSON.parse(e.data); if (msg.type === 'snapshot') {{ state.agents = msg.data.agents; state.metrics = msg.data.metrics; state.telicoConfigured = !!msg.data.telicoConfigured; state.lastSync = msg.data.lastSync || null; state.schedule = msg.data.schedule || null; state.recentCalls = msg.data.recentCalls || []; state.lastUpdate = Date.now(); notify(); }} }}; }})();
+{WALLBOARD_SCRIPT}
+</script></body></html>"""
