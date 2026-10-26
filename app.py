@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 import uvicorn
 import json
 import reports
+
 from database import seed
 from utils import make_session, get_session, drop_session, home_for_role, hub, snapshot_full, telico_sync_loop, break_expiry_loop
 import wallboard
@@ -14,13 +15,24 @@ import agent
 import sms
 import call_history
 
+# Import the background task for stop listener
+from stop_listener import stop_listener_loop
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     seed()
+    
+    # Start background tasks
     t1 = asyncio.create_task(telico_sync_loop())
     t2 = asyncio.create_task(break_expiry_loop())
+    t3 = asyncio.create_task(stop_listener_loop()) # Automatically runs stop_watcher
+    
     yield
-    t1.cancel(); t2.cancel()
+    
+    # Cancel background tasks on shutdown
+    t1.cancel()
+    t2.cancel()
+    t3.cancel()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -31,6 +43,7 @@ app.include_router(agent.router)
 app.include_router(sms.router)
 app.include_router(reports.router)
 app.include_router(call_history.router)
+
 LOGIN_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -92,4 +105,4 @@ async def ws_endpoint(ws: WebSocket):
     finally: await hub.leave(ws)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

@@ -8,6 +8,7 @@ from pathlib import Path
 import csv
 import io
 import asyncio
+import re
 import requests
 from requests.auth import HTTPBasicAuth
 import logging
@@ -21,8 +22,12 @@ log = logging.getLogger("app")
 SMS_UPLOAD_DIR = Path(os.getenv("SMS_UPLOAD_DIR", str(Path(__file__).parent / "sms_uploads")))
 SMS_UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
 
+# Path to the opt-out exclusion list (updated live by stop_listener.py)
+OPT_OUT_FILE = Path(os.getenv("OPT_OUT_FILE", str(Path(__file__).parent / "opt_out.csv")))
+
 SMS_API_URL = os.getenv("SMS_API_URL", "https://sms.telico.cloud/api/send_sms")
 MMS_API_URL = os.getenv("MMS_API_URL", "https://sms.telico.cloud/api/send_mms")
+
 SMS_USERNAME = os.getenv("SMS_USERNAME", "")
 SMS_PASSWORD = os.getenv("SMS_PASSWORD", "")
 SMS_SOURCE_DID = os.getenv("SMS_SOURCE_DID", "")
@@ -121,9 +126,9 @@ SMS_BODY = f"""
         <div class="section-title" style="margin-top:22px">2 · Media</div>
         <div class="sms-field">
           <div class="sms-seg" id="sms-media-seg">
-            <button type="button" data-mode="none"   class="active" onclick="setMediaMode('none')">No media</button>
-            <button type="button" data-mode="upload"               onclick="setMediaMode('upload')">Upload file</button>
-            <button type="button" data-mode="path"                 onclick="setMediaMode('path')">URL / path</button>
+            <button type="button" data-mode="none" class="active" onclick="setMediaMode('none')">No media</button>
+            <button type="button" data-mode="upload" onclick="setMediaMode('upload')">Upload file</button>
+            <button type="button" data-mode="path" onclick="setMediaMode('path')">URL / path</button>
           </div>
 
           <div id="sms-media-none-panel">
@@ -149,15 +154,15 @@ SMS_BODY = f"""
         <div class="section-title" style="margin-top:22px">3 · Bulk Recipients</div>
         <div class="sms-field">
           <div class="sms-seg" id="sms-recip-seg">
-            <button type="button" data-mode="csv"   class="active" onclick="setRecipMode('csv')">Upload CSV</button>
-            <button type="button" data-mode="paste"               onclick="setRecipMode('paste')">Paste list</button>
+            <button type="button" data-mode="csv" class="active" onclick="setRecipMode('csv')">Upload CSV</button>
+            <button type="button" data-mode="paste" onclick="setRecipMode('paste')">Paste list</button>
           </div>
 
           <div id="sms-recip-csv-panel">
             <label class="sms-drop" for="sms-csv-file">
               <div class="big-icon">📄</div>
               <div style="font-weight:600;">Click to choose a CSV file</div>
-              <div class="hint">Columns needed: <code>name,phone</code></div>
+              <div class="hint">Columns needed: <code>name,phone</code> (Opt-outs in <code>opt_out.csv</code> are automatically skipped)</div>
               <div class="filename" id="sms-csv-filename"></div>
               <input type="file" id="sms-csv-file" accept=".csv,text/csv" onchange="onCsvFilePicked(this)">
             </label>
@@ -295,7 +300,7 @@ window.sendSmsBlast = async () => {
       btn.textContent = 'Send Bulk Blast';
       return;
     }
-    showToast('Blast started in background!', 'ok');
+    showToast('Blast started in background (opt-outs filtered)!', 'ok');
     document.getElementById('sms-summary').style.display = 'none';
     document.getElementById('sms-results').innerHTML = '<div class="sms-empty">Sending messages...</div>';
 
@@ -393,6 +398,33 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 """
 
+def _norm_phone(p) -> str:
+    """Normalizes phone numbers to the last 10 digits for reliable matching."""
+    return re.sub(r"\D", "", str(p or ""))[-10:]
+
+def _get_opt_out_phones() -> set[str]:
+    """Reads opt_out.csv and returns a set of normalized opted-out phone numbers."""
+    opt_outs = set()
+    if not OPT_OUT_FILE.exists():
+        return opt_outs
+    try:
+        with open(OPT_OUT_FILE, mode="r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                return opt_outs
+            field_map = {col.lower().strip(): col for col in reader.fieldnames}
+            phone_key = field_map.get("phone") or field_map.get("number") or field_map.get("mobile")
+            if not phone_key:
+                return opt_outs
+
+            for row in reader:
+                p = _norm_phone(row.get(phone_key))
+                if p:
+                    opt_outs.add(p)
+    except Exception as e:
+        log.error(f"Error reading opt_out.csv: {e}")
+    return opt_outs
+
 def _send_sms_or_mms(destination: str, message: str, media_input: str = "") -> dict:
     if not (SMS_USERNAME and SMS_PASSWORD and SMS_SOURCE_DID):
         log.error("SMS failed: SMS_USERNAME, SMS_PASSWORD, or SMS_SOURCE_DID missing from .env")
@@ -473,11 +505,19 @@ def _parse_recipients_text(text: str) -> list[dict]:
     return [r for r in out if r["phone"]]
 
 async def _process_sms_blast(recipients: list[dict], template: str, media_path: str):
+    # Automatically filter out opted-out phone numbers using normalized 10-digit matching
+    opt_out_phones = _get_opt_out_phones()
+    filtered_recipients = [r for r in recipients if _norm_phone(r["phone"]) not in opt_out_phones]
+    
+    skipped_count = len(recipients) - len(filtered_recipients)
+    if skipped_count > 0:
+        log.info(f"Skipped {skipped_count} recipient(s) found in opt_out.csv due to STOP/Unsubscribe requests.")
+
     results = []
-    total = len(recipients)
+    total = len(filtered_recipients)
     await hub.broadcast({"type": "sms_progress", "sent": 0, "total": total, "results": []})
 
-    for r in recipients:
+    for r in filtered_recipients:
         phone = (r["phone"] or "").strip()
         if not phone: continue
         name = (r.get("name") or "").strip() or "Valued Customer"
@@ -544,7 +584,6 @@ async def api_sms_send(
     sess = get_session(request)
     if not sess or sess["role"] != "manager": raise HTTPException(403, "manager only")
     
-    # DEBUG
     log.info(f"Received SMS request. mode={recip_mode}, media={media_mode}, template_len={len(message_template)}")
     
     recipients = _parse_recipients_csv(await recipients_csv.read()) if recip_mode == "csv" else _parse_recipients_text(recipients_text)
