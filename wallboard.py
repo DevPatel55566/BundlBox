@@ -142,7 +142,7 @@ def page_wallboard(request: Request):
 </head><body>
 {WALLBOARD_BODY}
 <script>
-const STATUSES = {json.dumps(STATUSES) if 'STATUSES' in globals() else '[]'}; const QUEUES = {json.dumps(QUEUES) if 'QUEUES' in globals() else '[]'};
+const STATUSES = {json.dumps(globals().get('STATUSES', []))}; const QUEUES = {json.dumps(globals().get('QUEUES', []))};
 const state = {{ agents: [], metrics: [], telicoConfigured: false, breakLimitSeconds: 1800, lastSync: null, lastUpdate: Date.now(), schedule: null, recentCalls: [] }};
 const listeners = [];
 function onUpdate(fn){{ listeners.push(fn); }}
