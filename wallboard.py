@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from utils import get_session, home_for_role
+import json
 
 router = APIRouter()
 
@@ -78,43 +79,9 @@ WALLBOARD_BODY = """
 """
 
 WALLBOARD_SCRIPT = r"""
-// Calls answered by these phone numbers must not count as agent answers.
-const EXCLUDED_ANSWERED_BY = new Set(['8008470236', '9059015353']);
-
-function isExcludedAnsweredBy(call) {
-  if (String(call.direction || '').toLowerCase() === 'outbound') return false;
-  if (String(call.status || '').toLowerCase() !== 'answer') return false;
-
-  const destinationDigits = String(call.destination || '').replace(/\D/g, '');
-  return [...EXCLUDED_ANSWERED_BY].some(number => destinationDigits.includes(number));
-}
-
 function renderQueues(){
   const wrap = document.getElementById('queues');
   if (!wrap) return;
-  
-  // Calculate clean stats from recentCalls to match the Manager page
-  const queueStats = {
-      "French": { answered: 0, missed: 0 },
-      "English": { answered: 0, missed: 0 },
-      "Delivery Line": { answered: 0, missed: 0 }
-  };
-
-  if (state.recentCalls && state.recentCalls.length > 0) {
-      state.recentCalls.forEach(c => {
-          if (isExcludedAnsweredBy(c)) return;
-          const q = c.queue;
-          if (!queueStats[q]) return;
-          
-          if (String(c.direction || '').toLowerCase() !== 'outbound') {
-              if (String(c.status || '') === 'Answer') {
-                  queueStats[q].answered++;
-              } else {
-                  queueStats[q].missed++;
-              }
-          }
-      });
-  }
 
   const totalWaiting = state.metrics.reduce((acc, m) => acc + (m.waiting || 0), 0);
   const twEl = document.getElementById('wb-total-waiting');
@@ -135,15 +102,9 @@ function renderQueues(){
     const oldestHold = m.waiting ? fmtWait(m.longestWaitSeconds) : '—';
     const waitClass = m.waiting > 0 ? 'blink-red' : '';
 
-    // Use the filtered stats, fallback to backend metrics if recentCalls is empty
-    const qStat = queueStats[m.queue];
-    let displayCount = m.count || 0;
-    let displayMissed = m.missed || 0;
-    
-    if (state.recentCalls && state.recentCalls.length > 0 && qStat) {
-        displayCount = qStat.answered;
-        displayMissed = qStat.missed;
-    }
+    // Use accurate backend totals
+    const displayCount = m.count || 0;
+    const displayMissed = m.missed || 0;
 
     return `
     <div class="wb-card">

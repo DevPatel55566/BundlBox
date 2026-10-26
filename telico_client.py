@@ -378,7 +378,6 @@ def fetch_phone_lines() -> list[dict]:
         party = (p.get("call_party") or "").strip().lower()
         label = p.get("label") or p.get("description") or ""
         
-        # Extract Feature Code from Telico XML
         feature_code = p.get("feature_code") or ""
         formatted_name = f'{feature_code} "{label}"' if feature_code else label
 
@@ -542,18 +541,42 @@ def fetch_today_calls(queue_members: dict | None = None) -> tuple[dict, dict, li
 
             row_text = row.get_text(" ", strip=True).lower()
             
+            # --- FIX: Robust queue matching ---
+            q_name = None
+            if "english csr" in row_text or "english" in source_line.lower() or '"en' in row_text:
+                q_name = "English"
+            elif "french csr" in row_text or "french" in source_line.lower() or '"fr' in row_text:
+                q_name = "French"
+            elif "delivery line" in row_text or "delivery" in source_line.lower():
+                q_name = "Delivery Line"
+
+            if not q_name and direction == "outbound" and queue_members:
+                m_ext = re.match(r'^(\d+)', source_line)
+                if m_ext:
+                    ext = m_ext.group(1)
+                    for q_iter, q_data in queue_members.items():
+                        if any(mem["extension"] == ext for mem in q_data["members"]):
+                            q_name = q_iter
+                            break
+                            
+            if not q_name and direction == "outbound":
+                q_name = "English"
+
+            if not q_name:
+                continue
+
             if callid not in calls:
                 calls[callid] = {
-                    "queue": None, "answered": False, "attempts": 0,
+                    "queue": q_name, "answered": False, "attempts": 0,
                     "outbound": (direction == "outbound"), "talk": 0, "hold": 0,
                     "source_line": source_line, "called_text": called_text,
                     "external_source": "", "agent_dest": "", "time_str": time_str
                 }
+            else:
+                if q_name and not calls[callid]["queue"]:
+                    calls[callid]["queue"] = q_name
+                    
             c = calls[callid]
-
-            if "english csr" in row_text: c["queue"] = "English"
-            elif "french csr" in row_text: c["queue"] = "French"
-            elif "delivery line" in row_text: c["queue"] = "Delivery Line"
 
             if direction == "inbound":
                 if "csr" not in source_line.lower() and "delivery" not in source_line.lower():
@@ -569,15 +592,6 @@ def fetch_today_calls(queue_members: dict | None = None) -> tuple[dict, dict, li
                 c["hold"] += dur
 
         for c in calls.values():
-            if not c["queue"] and c["outbound"] and queue_members:
-                m_ext = re.match(r'^(\d+)', c["source_line"])
-                if m_ext:
-                    ext = m_ext.group(1)
-                    for q_iter, q_data in queue_members.items():
-                        if any(mem["extension"] == ext for mem in q_data["members"]):
-                            c["queue"] = q_iter
-                            break
-            
             if not c["queue"]: continue
 
             q = c["queue"]
