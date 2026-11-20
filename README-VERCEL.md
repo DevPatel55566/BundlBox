@@ -1,7 +1,11 @@
 # BundlBox on Vercel
 
-FastAPI app deployed as a Vercel Python serverless function (`api/index.py`
-re-exports `app` from `app.py`; `vercel.json` rewrites everything to it).
+FastAPI app deployed as a Vercel Python project: the root `app.py` (with
+`app = FastAPI()`) is the entrypoint and serves every route directly.
+`vercel.json` only defines the daily cron — do NOT add a rewrite to
+`/api/index.py`: rewrites in a Python project map to paths *inside* the
+app, so rewriting everything to `/api/index.py` makes every route 404.
+There is no `api/` directory anymore.
 
 ## Deploy
 
