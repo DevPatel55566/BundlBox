@@ -45,6 +45,20 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# The Render deployment (bundlbox.onrender.com) is retired: everything now
+# runs on Vercel (bundlbox.vercel.app). Render sets RENDER=true on its own
+# services, Vercel does not, so this redirect only ever fires on Render —
+# on Vercel (and locally) the app serves normally. Same path and query are
+# kept, so a Render link to /wallboard lands on Vercel's /wallboard.
+@app.middleware("http")
+async def _render_to_vercel_redirect(request, call_next):
+    if os.getenv("RENDER") == "true":
+        dest = "https://bundlbox.vercel.app" + request.url.path
+        if request.url.query:
+            dest += "?" + request.url.query
+        return RedirectResponse(dest, status_code=301)
+    return await call_next(request)
+
 # Include Routers
 app.include_router(wallboard.router)
 app.include_router(manager.router)
