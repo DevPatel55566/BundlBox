@@ -893,6 +893,9 @@ function fmtHMS(sec){{ sec = Math.max(0, Math.floor(Number(sec) || 0)); const h 
 function fmtHHMM(iso){{ if (!iso) return '--:--'; const d = new Date(iso); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }}
 function showToast(msg, kind=''){{ const el = document.createElement('div'); el.className = 'toast ' + kind; el.textContent = msg; document.body.appendChild(el); setTimeout(() => el.remove(), 5000); }}
 (function connectWS(){{ const proto = location.protocol === 'https:' ? 'wss' : 'ws'; const ws = new WebSocket(proto+'://'+location.host+'/ws'); ws.onclose = () => {{ setTimeout(connectWS, 2000); }}; ws.onmessage = (e) => {{ const msg = JSON.parse(e.data); if (msg.type === 'snapshot') {{ state.agents = msg.data.agents; state.metrics = msg.data.metrics; state.telicoConfigured = !!msg.data.telicoConfigured; state.lastSync = msg.data.lastSync || null; state.schedule = msg.data.schedule || null; state.recentCalls = msg.data.recentCalls || []; state.lastUpdate = Date.now(); notify(); }} }}; }})();
+// Vercel: serverless cannot hold a WebSocket, so poll /api/snapshot too.
+setInterval(async () => {{ try {{ const r = await fetch('/api/snapshot', {{credentials:'include'}}); if (!r.ok) return; const d = await r.json(); state.agents = d.agents; state.metrics = d.metrics; state.telicoConfigured = !!d.telicoConfigured; state.lastSync = d.lastSync || null; state.schedule = d.schedule || null; state.recentCalls = d.recentCalls || []; state.lastUpdate = Date.now(); notify(); }} catch (e) {{}} }}, 5000);
+
 startClock();
 {MANAGER_SCRIPT}
 </script></body></html>"""

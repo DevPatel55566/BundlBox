@@ -1,0 +1,34 @@
+# BundlBox on Vercel
+
+FastAPI app deployed as a Vercel Python serverless function (`api/index.py`
+re-exports `app` from `app.py`; `vercel.json` rewrites everything to it).
+
+## Deploy
+
+Connect this repo in Vercel (import `DevPatel55566/BundlBox`), no build
+command needed. Python deps come from `requirements.txt`.
+
+## Env vars to set in Vercel
+
+- `SESSION_SECRET` — long random string (signs login cookies; required in
+  production, otherwise logins use the dev default).
+- `MANAGER_USERNAME` / `MANAGER_PASSWORD` (default colleen / pw123456)
+- `WALLBOARD_USERNAME` / `WALLBOARD_PASSWORD` (default wallboard / wallboard)
+- `CRON_SECRET` — optional; if set, `/api/cron/sync` needs
+  `Authorization: Bearer <secret>`. Vercel Cron calls it every 5 minutes.
+- Telico / SMS (only if you want live sync): `TELICO_USERNAME`,
+  `TELICO_PASSWORD`, `TELICO_CUSTOMER_ID`, `TELICO_BASE_URL`,
+  `SMS_USERNAME`, `SMS_PASSWORD`, `SMS_SOURCE_DID`, `SMS_API_TOKEN`.
+
+## Known Vercel limits (by design, not bugs)
+
+- **Database is ephemeral.** SQLite lives at `/tmp/cc.db` on Vercel, so
+  agents, statuses and history reset on cold start / redeploy. For real
+  persistence this needs an external DB (e.g. Postgres).
+- **No live WebSocket.** `/ws` cannot stay open on serverless, so the
+  wallboard / manager / agent pages poll `GET /api/snapshot` every 5s.
+- **No background loops.** The Telico sync, break-expiry and STOP-listener
+  loops only run on a long-lived host. On Vercel, Vercel Cron hits
+  `GET /api/cron/sync` every 5 minutes for a single Telico sync pass.
+- **Logins are stateless signed cookies** (HMAC, `SESSION_SECRET`), so they
+  survive across serverless instances.

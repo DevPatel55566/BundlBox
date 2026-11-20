@@ -15,9 +15,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).parent
-OPT_OUT_FILE = Path(os.getenv("OPT_OUT_FILE", str(BASE_DIR / "opt_out.csv")))
-CONTACTS_FILE = Path(os.getenv("CONTACTS_FILE", str(BASE_DIR / "contacts.csv")))
-STATE_FILE = BASE_DIR / "stop_listener_state.json"
+OPT_OUT_FILE = Path(os.getenv("OPT_OUT_FILE", "/tmp/opt_out.csv" if os.getenv("VERCEL") else str(BASE_DIR / "opt_out.csv")))
+CONTACTS_FILE = Path(os.getenv("CONTACTS_FILE", "/tmp/contacts.csv" if os.getenv("VERCEL") else str(BASE_DIR / "contacts.csv")))
+STATE_FILE = Path("/tmp/stop_listener_state.json") if os.getenv("VERCEL") else BASE_DIR / "stop_listener_state.json"
 
 CONV_API_URL = os.getenv("CONV_API_URL", "https://sms.telico.cloud/api/conversations")
 MSG_API_URL = os.getenv("MSG_API_URL", "https://sms.telico.cloud/api/messages")

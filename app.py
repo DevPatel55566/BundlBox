@@ -9,6 +9,8 @@ import reports
 
 from database import seed
 from utils import make_session, get_session, drop_session, home_for_role, hub, snapshot_full, telico_sync_loop, break_expiry_loop
+import telico_client
+from utils import _apply_telico_snapshot
 import wallboard
 import manager
 import agent
@@ -18,21 +20,28 @@ import call_history
 # Import the background task for stop listener
 from stop_listener import stop_listener_loop
 
+ON_VERCEL = bool(os.getenv("VERCEL"))
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     seed()
-    
-    # Start background tasks
-    t1 = asyncio.create_task(telico_sync_loop())
-    t2 = asyncio.create_task(break_expiry_loop())
-    t3 = asyncio.create_task(stop_listener_loop()) # Automatically runs stop_watcher
-    
+
+    # Vercel serverless functions freeze between requests, so long-running
+    # background loops (Telico sync, break expiry, STOP listener) cannot run
+    # there. They only start on a long-lived host (e.g. local / Render).
+    # On Vercel use GET /api/cron/sync (Vercel Cron) for a single sync pass.
+    tasks = []
+    if not ON_VERCEL:
+        tasks = [
+            asyncio.create_task(telico_sync_loop()),
+            asyncio.create_task(break_expiry_loop()),
+            asyncio.create_task(stop_listener_loop()),
+        ]
+
     yield
-    
-    # Cancel background tasks on shutdown
-    t1.cancel()
-    t2.cancel()
-    t3.cancel()
+
+    for task in tasks:
+        task.cancel()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -55,6 +64,38 @@ body { height: 100vh; background: #0b1120; color: #f1f5f9; font-family:'Space Gr
 .login-wrap button { width: 100%; padding: 14px; border-radius: 10px; background: #22d3ee; color: #0b1120; font-weight: 700; font-size: 17px; cursor: pointer; border: none; }
 .login-error { color: #f59e0b; background: #1e293b; padding: 10px 14px; border-radius: 8px; font-size: 15px; margin-bottom: 14px; }
 """
+
+@app.get("/api/health")
+def api_health():
+    return {"ok": True, "vercel": ON_VERCEL, "telicoConfigured": telico_client.is_configured()}
+
+@app.get("/api/snapshot")
+def api_snapshot(request: Request):
+    # HTTP fallback for /ws: Vercel serverless cannot hold WebSockets, so the
+    # wallboard / manager / agent pages poll this every 5s instead.
+    if not get_session(request):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="not signed in")
+    return snapshot_full()
+
+@app.get("/api/cron/sync")
+async def api_cron_sync(request: Request):
+    # Single Telico sync pass, for Vercel Cron (or a manual hit). Protected
+    # by CRON_SECRET when set; without it, only allow it when Telico is
+    # configured, matching the old loop's behaviour.
+    secret = os.getenv("CRON_SECRET", "")
+    if secret and request.headers.get("Authorization") != f"Bearer {secret}":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="bad cron secret")
+    if not telico_client.is_configured():
+        return {"ok": False, "reason": "telico not configured"}
+    try:
+        snap = await asyncio.to_thread(telico_client.fetch_all)
+        _apply_telico_snapshot(snap)
+        await hub.broadcast({"type": "snapshot", "data": snapshot_full()})
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
 
 @app.get("/")
 def page_root(request: Request):

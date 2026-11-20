@@ -19,7 +19,7 @@ load_dotenv()
 router = APIRouter()
 log = logging.getLogger("app")
 
-SMS_UPLOAD_DIR = Path(os.getenv("SMS_UPLOAD_DIR", str(Path(__file__).parent / "sms_uploads")))
+SMS_UPLOAD_DIR = Path(os.getenv("SMS_UPLOAD_DIR", "/tmp/sms_uploads" if os.getenv("VERCEL") else str(Path(__file__).parent / "sms_uploads")))
 SMS_UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
 
 # Path to the opt-out exclusion list (updated live by stop_listener.py)

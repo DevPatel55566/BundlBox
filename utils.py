@@ -1,4 +1,7 @@
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import secrets
 import time
@@ -19,8 +22,16 @@ ANSWER_POLL_INTERVAL = float(os.getenv("ANSWER_POLL_INTERVAL", "0.25"))
 ANSWER_FALLBACK_ACK = os.getenv("ANSWER_FALLBACK_ACK", "0") == "1"
 CALL_ON_BREAK_EXPIRY = os.getenv("CALL_ON_BREAK_EXPIRY", "1") == "1"
 
-_sessions: dict[str, dict] = {}
 SESSION_TTL = 12 * 3600
+# Sessions must be stateless on Vercel: each serverless instance has its own
+# memory, so an in-memory session dict would randomly log users out.
+# Tokens are now HMAC-signed (role | agent_id | created). Set SESSION_SECRET
+# in Vercel env vars to a long random value; the default is only for local dev.
+_SESSION_SECRET = os.getenv("SESSION_SECRET", "bundlbox-dev-secret-change-me")
+
+
+def _session_sign(payload: str) -> str:
+    return hmac.new(_SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
 _pending_toggles: dict[tuple[int, str], float] = {}
 _last_sync: dict = {"at": None, "ok": False, "queues": {}, "phones": [], "recent_calls": []}
 
@@ -49,22 +60,27 @@ class MassBody(BaseModel): queues: list[str]; on: bool
 class ScheduleBody(BaseModel): data: dict
 
 def make_session(role, agent_id=None):
-    tok = secrets.token_urlsafe(32)
-    _sessions[tok] = {"role": role, "agent_id": agent_id, "created": time.time()}
-    return tok
+    payload = f"{role}|{agent_id or ''}|{int(time.time())}"
+    b64 = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    return f"{b64}.{_session_sign(payload)}"
 
 def get_session(request: Request):
     tok = request.cookies.get("cc_session")
     if not tok: return None
-    s = _sessions.get(tok)
-    if not s: return None
-    if time.time() - s["created"] > SESSION_TTL:
-        _sessions.pop(tok, None); return None
-    return s
+    try:
+        b64, sig = tok.rsplit(".", 1)
+        payload = base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4)).decode()
+        if not hmac.compare_digest(sig, _session_sign(payload)): return None
+        role, agent_id_s, created_s = payload.split("|")
+        if time.time() - int(created_s) > SESSION_TTL: return None
+        return {"role": role, "agent_id": int(agent_id_s) if agent_id_s else None, "created": int(created_s)}
+    except Exception:
+        return None
 
 def drop_session(request: Request):
-    tok = request.cookies.get("cc_session")
-    if tok: _sessions.pop(tok, None)
+    # Stateless sessions: nothing server-side to drop; the cookie is cleared
+    # by the /logout handler.
+    return None
 
 def home_for_role(role):
     if role == "manager": return "/manager"

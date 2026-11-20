@@ -149,5 +149,8 @@ function onUpdate(fn){{ listeners.push(fn); }}
 function notify(){{ for (const fn of listeners) fn(state); }}
 function fmtWait(sec){{ const m=Math.floor(sec/60), s=sec%60; return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); }}
 (function connectWS(){{ const proto = location.protocol === 'https:' ? 'wss' : 'ws'; const ws = new WebSocket(proto+'://'+location.host+'/ws'); ws.onclose = () => {{ setTimeout(connectWS, 2000); }}; ws.onmessage = (e) => {{ const msg = JSON.parse(e.data); if (msg.type === 'snapshot') {{ state.agents = msg.data.agents; state.metrics = msg.data.metrics; state.telicoConfigured = !!msg.data.telicoConfigured; state.lastSync = msg.data.lastSync || null; state.schedule = msg.data.schedule || null; state.recentCalls = msg.data.recentCalls || []; state.lastUpdate = Date.now(); notify(); }} }}; }})();
+// Vercel: serverless cannot hold a WebSocket, so poll /api/snapshot too.
+setInterval(async () => {{ try {{ const r = await fetch('/api/snapshot', {{credentials:'include'}}); if (!r.ok) return; const d = await r.json(); state.agents = d.agents; state.metrics = d.metrics; state.telicoConfigured = !!d.telicoConfigured; state.lastSync = d.lastSync || null; state.schedule = d.schedule || null; state.recentCalls = d.recentCalls || []; state.lastUpdate = Date.now(); notify(); }} catch (e) {{}} }}, 5000);
+
 {WALLBOARD_SCRIPT}
 </script></body></html>"""

@@ -6,7 +6,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "America/Toronto"))
-DB_PATH = Path(os.getenv("DB_PATH", str(Path(__file__).parent / "cc.db")))
+# Vercel: the deployment filesystem is read-only except /tmp, and it is
+# ephemeral per serverless instance. Default to /tmp there so the app can
+# still boot and seed; data resets on cold start / redeploy. Set DB_PATH
+# explicitly (or use an external DB) for anything persistent.
+_DEFAULT_DB = "/tmp/cc.db" if os.getenv("VERCEL") else str(Path(__file__).parent / "cc.db")
+DB_PATH = Path(os.getenv("DB_PATH", _DEFAULT_DB))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents (
@@ -76,6 +81,7 @@ def today_str():
 def connect():
     global conn
     if conn is None:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         c = sqlite3.connect(DB_PATH, check_same_thread=False)
         c.row_factory = sqlite3.Row
         conn = c
@@ -123,8 +129,8 @@ def seed():
 
 def ensure_default_users():
     c = connect()
-    mgr_user = os.getenv("MANAGER_USERNAME", "manager")
-    mgr_pass = os.getenv("MANAGER_PASSWORD", "admin")
+    mgr_user = os.getenv("MANAGER_USERNAME", "colleen")
+    mgr_pass = os.getenv("MANAGER_PASSWORD", "pw123456")
     wb_user = os.getenv("WALLBOARD_USERNAME", "wallboard")
     wb_pass = os.getenv("WALLBOARD_PASSWORD", "wallboard")
 
