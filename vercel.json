@@ -2,5 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [{ "source": "/(.*)", "destination": "/api/index.py" }],
   "functions": { "api/index.py": { "maxDuration": 60 } },
-  "crons": [{ "path": "/api/cron/sync", "schedule": "*/5 * * * *" }]
+  "crons": [{ "path": "/api/cron/sync", "schedule": "0 13 * * *" }]
 }

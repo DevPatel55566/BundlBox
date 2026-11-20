@@ -15,7 +15,7 @@ command needed. Python deps come from `requirements.txt`.
 - `MANAGER_USERNAME` / `MANAGER_PASSWORD` (default colleen / pw123456)
 - `WALLBOARD_USERNAME` / `WALLBOARD_PASSWORD` (default wallboard / wallboard)
 - `CRON_SECRET` — optional; if set, `/api/cron/sync` needs
-  `Authorization: Bearer <secret>`. Vercel Cron calls it every 5 minutes.
+  `Authorization: Bearer <secret>`. Vercel Cron calls it once a day (13:00 UTC, 8am Toronto) — the Hobby plan only allows daily crons, so the every-5-minutes schedule breaks the build.
 - Telico / SMS (only if you want live sync): `TELICO_USERNAME`,
   `TELICO_PASSWORD`, `TELICO_CUSTOMER_ID`, `TELICO_BASE_URL`,
   `SMS_USERNAME`, `SMS_PASSWORD`, `SMS_SOURCE_DID`, `SMS_API_TOKEN`.
@@ -29,6 +29,6 @@ command needed. Python deps come from `requirements.txt`.
   wallboard / manager / agent pages poll `GET /api/snapshot` every 5s.
 - **No background loops.** The Telico sync, break-expiry and STOP-listener
   loops only run on a long-lived host. On Vercel, Vercel Cron hits
-  `GET /api/cron/sync` every 5 minutes for a single Telico sync pass.
+  `GET /api/cron/sync` once a day for a single Telico sync pass (Hobby plan limit; upgrade to Pro for more frequent crons).
 - **Logins are stateless signed cookies** (HMAC, `SESSION_SECRET`), so they
   survive across serverless instances.
