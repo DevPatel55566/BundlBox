@@ -1,7 +1,8 @@
+import asyncio
 import logging
 from fastapi import APIRouter, Request, HTTPException
 from database import connect
-from utils import get_session
+from utils import get_session, ensure_data_fresh
 
 log = logging.getLogger("app")
 router = APIRouter()
@@ -11,6 +12,10 @@ async def api_get_reports(request: Request, start: str, end: str):
     sess = get_session(request)
     if not sess or sess["role"] != "manager": 
         raise HTTPException(403, "manager only")
+
+    # Fresh Vercel instances start with an empty DB; pull Telico data now
+    # instead of waiting for the daily cron sync, so reports aren't blank.
+    await asyncio.to_thread(ensure_data_fresh)
 
     c = connect()
     

@@ -33,6 +33,12 @@ command needed. Python deps come from `requirements.txt`.
   wallboard / manager / agent pages poll `GET /api/snapshot` every 5s.
 - **No background loops.** The Telico sync, break-expiry and STOP-listener
   loops only run on a long-lived host. On Vercel, Vercel Cron hits
-  `GET /api/cron/sync` once a day for a single Telico sync pass (Hobby plan limit; upgrade to Pro for more frequent crons).
+  `GET /api/cron/sync` once a day for a single Telico sync pass (Hobby plan limit; upgrade to Pro for more frequent crons). Because the
+  database is ephemeral, the first wallboard/reports read on a fresh
+  instance also triggers one sync pass automatically (at most once every
+  5 minutes), so the pages refill themselves instead of staying blank.
+- **Reports only cover today on Vercel.** Past days' call data is lost
+  whenever the instance restarts, so date ranges before today come back
+  empty. For real report history this needs an external DB (e.g. Postgres).
 - **Logins are stateless signed cookies** (HMAC, `SESSION_SECRET`), so they
   survive across serverless instances.

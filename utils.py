@@ -3,7 +3,9 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import secrets
+import threading
 import time
 import os
 from datetime import datetime, timedelta
@@ -15,6 +17,8 @@ from database import connect, now_local, now_iso, today_str, TZ
 QUEUES = ["French", "English", "Delivery Line"]
 QUEUE_COL = {"French": "french", "English": "english", "Delivery Line": "delivery"}
 STATUSES = ["Login / Available", "Logout / Offline", "Admin / Wrap Up", "Break / Lunch", "Outbound"]
+
+log = logging.getLogger("app")
 
 BREAK_LIMIT_SECONDS = 30 * 60
 ANSWER_WATCH_SECONDS = int(os.getenv("ANSWER_WATCH_SECONDS", "20"))
@@ -436,6 +440,43 @@ def _apply_telico_snapshot(snap):
         
     c.commit()
     _last_sync = {"at": now_iso(), "ok": True, "queues": queue_log, "phones": len(snap.get("phones", [])), "recent_calls": recent_calls}
+
+# --- Lazy Telico sync (Vercel) -------------------------------------------------
+# On Vercel the SQLite DB lives in /tmp and is wiped on every cold start /
+# redeploy, so a fresh instance has no agents and empty reports until the
+# daily cron sync runs. To keep the wallboard and reports working, any read
+# of live data first checks whether the DB is empty and, if Telico is
+# configured, runs one sync pass right then. Guarded so it runs at most
+# once every 5 minutes and concurrent requests never stampede Telico.
+_lazy_sync_lock = threading.Lock()
+_lazy_sync_last_attempt = 0.0
+
+
+def ensure_data_fresh():
+    """Sync once from Telico if the local DB is empty (fresh Vercel instance)."""
+    global _lazy_sync_last_attempt
+    if not telico_client.is_configured():
+        return
+    now = time.time()
+    if now - _lazy_sync_last_attempt < 300:
+        return
+    try:
+        c = connect()
+        n = c.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
+    except Exception:
+        return
+    if n:
+        return
+    if not _lazy_sync_lock.acquire(blocking=False):
+        return
+    try:
+        _lazy_sync_last_attempt = now
+        snap = telico_client.fetch_all()
+        _apply_telico_snapshot(snap)
+    except Exception:
+        log.exception("lazy Telico sync failed")
+    finally:
+        _lazy_sync_lock.release()
 
 async def telico_sync_loop():
     while True:
