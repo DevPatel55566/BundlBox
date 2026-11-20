@@ -1,0 +1,16 @@
+.git
+__pycache__
+*.pyc
+*.db
+.venv
+venv
+sms_uploads
+.env
+
+
+
+
+
+
+
+
