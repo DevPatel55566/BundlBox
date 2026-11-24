@@ -8,7 +8,7 @@ import json
 import reports
 
 from database import seed
-from utils import make_session, get_session, drop_session, home_for_role, hub, snapshot_full, telico_sync_loop, break_expiry_loop, ensure_data_fresh
+from utils import make_session, get_session, drop_session, home_for_role, hub, snapshot_full, telico_sync_loop, break_expiry_loop, ensure_data_fresh, ensure_schedule_fresh
 import telico_client
 from utils import _apply_telico_snapshot
 import wallboard
@@ -93,6 +93,9 @@ def api_snapshot(request: Request):
     # Fresh Vercel instances start with an empty DB; pull Telico data now
     # instead of waiting for the daily cron sync, so the wallboard isn't blank.
     ensure_data_fresh()
+    # Same for the schedule: a fresh instance's /tmp DB only has the defaults,
+    # so read the real hours back from Telico instead of showing stale ones.
+    ensure_schedule_fresh()
     return snapshot_full()
 
 @app.get("/api/cron/sync")

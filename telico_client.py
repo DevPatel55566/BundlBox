@@ -159,6 +159,114 @@ def fetch_time_periods(group_id: int) -> list[dict]:
     return periods
 
 
+def fetch_time_period_detail(period_id: str) -> dict | None:
+    """Read one Telico time period back from its edit form.
+
+    Returns {name, start "HH:MM", end "HH:MM", date "YYYY-MM-DD" or None,
+    days_week ["1".."7"]} or None if the form could not be read.
+    A period is a repeating weekday period when days_week is set; otherwise
+    it is a one-off period for its date (days_week is the reliable signal —
+    the form's repeats flag is not always present as a readable field)."""
+    html = _get(f"/features/times/periods/edit/?id={period_id}")
+    if not html:
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    form = soup.find("form", action=re.compile(r"save"))
+    if not form:
+        return None
+    f = _form_to_dict(form)
+
+    def _hhmm(h, m):
+        try:
+            return f"{int(h):02d}:{int(m):02d}"
+        except (TypeError, ValueError):
+            return None
+
+    start = _hhmm(f.get("starthour"), f.get("startminute"))
+    end = _hhmm(f.get("endhour"), f.get("endminute"))
+    if not start or not end:
+        return None
+    date = None
+    try:
+        y, mo, d = int(f.get("start_year") or 0), int(f.get("start_month") or 0), int(f.get("start_day") or 0)
+        if y and mo and d:
+            date = f"{y:04d}-{mo:02d}-{d:02d}"
+    except (TypeError, ValueError):
+        date = None
+    days = f.get("days_week") or []
+    if isinstance(days, str):
+        days = [days]
+    return {
+        "id": str(period_id),
+        "name": f.get("name") or "",
+        "start": start,
+        "end": end,
+        "repeats": str(f.get("repeats", "0")) == "1",
+        "date": date,
+        "days_week": [str(x) for x in days],
+    }
+
+
+_DAY_BY_DOW = {"1": "Monday", "2": "Tuesday", "3": "Wednesday", "4": "Thursday",
+               "5": "Friday", "6": "Saturday", "7": "Sunday"}
+
+
+def fetch_schedule_from_telico() -> dict | None:
+    """Rebuild the BundlBox schedule from Telico's time groups — the live truth.
+
+    Vercel's /tmp SQLite DB is per-instance, so a schedule saved on one
+    instance is invisible to the next; reading the hours back from Telico
+    keeps the page showing the real hours instead of stale defaults.
+    Returns {hours, exceptions} (future exceptions only) or None if Telico
+    could not be read."""
+    try:
+        groups = fetch_time_groups()
+    except Exception:
+        logger.exception("fetch_schedule_from_telico: could not list time groups")
+        return None
+    biz_id = groups.get("business hours") or "2303"
+    exc_id = None
+    for k, v in groups.items():
+        if any(kw in k for kw in ("closed early", "holiday", "closure", "exception")):
+            exc_id = v
+            break
+    hours = {d: {"open": False, "start": "09:00", "end": "17:00"} for d in
+             ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]}
+    exceptions = []
+    today = datetime.now(TZ).date().isoformat()
+    try:
+        biz_periods = fetch_time_periods(int(biz_id))
+    except Exception:
+        logger.exception("fetch_schedule_from_telico: could not list business periods")
+        return None
+    for p in biz_periods[:30]:
+        det = fetch_time_period_detail(p["id"])
+        if not det:
+            continue
+        if det["days_week"]:
+            for dow in det["days_week"]:
+                day = _DAY_BY_DOW.get(str(dow))
+                if day:
+                    hours[day] = {"open": True, "start": det["start"], "end": det["end"]}
+        elif det["date"] and det["date"] >= today:
+            exceptions.append({"type": "open", "date": det["date"], "name": det["name"],
+                               "start": det["start"], "end": det["end"]})
+    if exc_id:
+        try:
+            exc_periods = fetch_time_periods(int(exc_id))
+        except Exception:
+            exc_periods = []
+        for p in exc_periods[:30]:
+            det = fetch_time_period_detail(p["id"])
+            if not det or not det["date"] or det["date"] < today:
+                continue
+            exceptions.append({"type": "closed", "date": det["date"], "name": det["name"],
+                               "start": "00:00", "end": "23:59"})
+    logger.info(f"fetch_schedule_from_telico: {sum(1 for h in hours.values() if h['open'])} open days, "
+                f"{len(exceptions)} future exceptions")
+    return {"hours": hours, "exceptions": exceptions}
+
+
 def _form_to_dict(form) -> dict:
     out: dict = {}
     for inp in form.find_all("input"):

@@ -481,7 +481,7 @@ function renderWeekEditor(){
     const saveBtn = document.getElementById('week-save-btn');
     if (!wrap) return;
     if (!weekDays.length) { wrap.innerHTML = ''; if (label) label.textContent = ''; if (saveBtn) saveBtn.style.display = 'none'; return; }
-    if (label) label.textContent = 'Week of ' + weekDays[0].label + ' to ' + weekDays[6].label + ', ' + weekDays[0].date.slice(0, 4);
+    if (label) label.textContent = 'Week of ' + weekDays[0].label + ', ' + weekDays[0].date.slice(0, 4) + ' to ' + weekDays[6].label + ', ' + weekDays[6].date.slice(0, 4);
     wrap.innerHTML = weekDays.map((wd, i) => `
     <div class="day-row">
       <div class="day-name"><input type="checkbox" id="wchk_${i}" ${wd.open ? 'checked' : ''}> ${wd.label.toUpperCase()}</div>
@@ -1166,6 +1166,10 @@ async def api_save_schedule(body: ScheduleBody, request: Request):
     sess = get_session(request)
     if not sess or sess["role"] != "manager": raise HTTPException(403, "manager only")
 
+    # Mark the save as the manager's own, so a later Telico rebuild on a fresh
+    # instance never overwrites hours the manager set here.
+    body.data["user_saved"] = True
+    body.data.pop("from_telico_at", None)
     c = connect()
     c.execute("UPDATE schedule SET data=? WHERE id=1", (json.dumps(body.data),))
     c.commit()

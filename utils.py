@@ -478,6 +478,55 @@ def ensure_data_fresh():
     finally:
         _lazy_sync_lock.release()
 
+_sched_sync_lock = threading.Lock()
+_sched_sync_last_attempt = 0.0
+
+def ensure_schedule_fresh():
+    """Rebuild the schedule from Telico when this instance's DB only has the
+    untouched default (fresh Vercel instance). Vercel's /tmp DB is per-instance,
+    so a save on one instance is invisible to the next; Telico is the shared
+    truth, so read the hours back from it instead of showing stale defaults.
+    A schedule the manager saved on THIS instance is never overwritten, and a
+    Telico rebuild is re-checked after 10 minutes so a save made elsewhere
+    still shows up."""
+    global _sched_sync_last_attempt
+    if not telico_client.is_configured():
+        return
+    now = time.time()
+    if now - _sched_sync_last_attempt < 300:
+        return
+    try:
+        c = connect()
+        row = c.execute("SELECT data FROM schedule WHERE id=1").fetchone()
+        data = json.loads(row["data"]) if row else {}
+    except Exception:
+        return
+    if data.get("user_saved"):
+        return
+    from_telico_at = data.get("from_telico_at")
+    try:
+        if from_telico_at and now - float(from_telico_at) < 600:
+            return
+    except (TypeError, ValueError):
+        pass
+    if not _sched_sync_lock.acquire(blocking=False):
+        return
+    try:
+        _sched_sync_last_attempt = now
+        sched = telico_client.fetch_schedule_from_telico()
+        if not sched:
+            return
+        sched["from_telico_at"] = now
+        if data.get("sync_status"):
+            sched["sync_status"] = data["sync_status"]
+        c2 = connect()
+        c2.execute("UPDATE schedule SET data=? WHERE id=1", (json.dumps(sched),))
+        c2.commit()
+    except Exception:
+        log.exception("schedule refresh from Telico failed")
+    finally:
+        _sched_sync_lock.release()
+
 async def telico_sync_loop():
     while True:
         await asyncio.sleep(15)
