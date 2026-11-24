@@ -278,6 +278,13 @@ MANAGER_SCRIPT = r"""
 let chartVolume, chartTalk, chartAttempts, chartOutbound;
 let currentMetrics = [];
 
+// The 5s snapshot poll re-renders the weekly-hours form from server state.
+// Without this flag it wipes a ticked checkbox before SAVE WEEK is clicked,
+// so the save posts the old (closed) values and Saturday never opens.
+let hoursDirty = false;
+document.getElementById('weekly-hours')?.addEventListener('input', () => { hoursDirty = true; });
+document.getElementById('weekly-hours')?.addEventListener('change', () => { hoursDirty = true; });
+
 async function api(path, body) {
   const r = await fetch(path, { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: body?JSON.stringify(body):undefined });
   return r.json().catch(()=>null);
@@ -362,7 +369,7 @@ window.saveWeek = async (btn) => {
         }
         const data = { ...(state.schedule || {}), hours: newHours };
         const r = await api('/api/settings/schedule', { data });
-        if (r && r.ok) showToast('Business hours saved — pushing to Telico…', 'ok');
+        if (r && r.ok) { showToast('Business hours saved — pushing to Telico…', 'ok'); hoursDirty = false; }
         else           showToast(r?.reason || 'Save failed', 'error');
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = 'SAVE WEEK'; }
@@ -444,7 +451,7 @@ function renderSchedule(){
   if (!wrap || !state.schedule || !state.schedule.hours) return;
 
   const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-  wrap.innerHTML = days.map(d => {
+  if (!hoursDirty) wrap.innerHTML = days.map(d => {
       const h = state.schedule.hours[d] || { open: false, start: "09:00", end: "17:00" };
       return `
       <div class="day-row">
