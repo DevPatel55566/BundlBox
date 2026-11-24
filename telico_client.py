@@ -197,11 +197,40 @@ def _form_to_dict(form) -> dict:
     return out
 
 
+# Telico rejects years outside the range its own time-period form allows
+# ("The years are invalid."). The form we just fetched lists the allowed
+# years, so read them from it instead of guessing: clamp to the offered
+# range, and never send a 20-year span — weekly periods are re-pushed on
+# every save anyway, so a 5-year horizon is plenty.
+REPEAT_HORIZON_YEARS = 5
+last_error: str = ""
+
+
+def _allowed_years(form, field: str) -> list[int] | None:
+    sel = form.find("select", {"name": field})
+    if not sel:
+        return None
+    years = []
+    for o in sel.find_all("option"):
+        v = (o.get("value") or o.get_text(strip=True) or "").strip()
+        try:
+            years.append(int(v))
+        except ValueError:
+            continue
+    return sorted(set(years)) or None
+
+
+def _clamp_year(year: int, allowed: list[int] | None, fallback_max: int) -> int:
+    if allowed:
+        return max(allowed[0], min(year, allowed[-1]))
+    return min(year, fallback_max)
+
+
 def save_time_period(group_id: int, period_id: str | None, data: dict) -> bool:
+    global last_error
     from urllib.parse import urljoin
 
     s = _session_get()
-
     if period_id:
         form_path = f"/features/times/periods/edit/?id={period_id}"
     else:
@@ -209,12 +238,14 @@ def save_time_period(group_id: int, period_id: str | None, data: dict) -> bool:
 
     html = _get(form_path)
     if not html:
+        last_error = "Could not load the Telico time-period form"
         logger.error(f"save_time_period {data['name']}: cannot fetch {form_path}")
         return False
 
     soup = BeautifulSoup(html, "html.parser")
     form = soup.find("form", action=re.compile(r"save"))
     if not form:
+        last_error = "Telico time-period form not found"
         logger.error(f"save_time_period {data['name']}: no save form on {form_path}")
         return False
 
@@ -239,22 +270,36 @@ def save_time_period(group_id: int, period_id: str | None, data: dict) -> bool:
     payload["endminute"]   = str(int(em))
     payload["endsecond"]   = "59"
 
-    now = datetime.now()
+    now = datetime.now(TZ)
+    start_allowed = _allowed_years(form, "start_year")
+    end_allowed = _allowed_years(form, "end_year")
     if data.get("repeats"):
-        end_dt = now.replace(year=now.year + 20)
-        payload["start_year"]  = str(now.year)
+        start_year = _clamp_year(now.year, start_allowed, now.year + REPEAT_HORIZON_YEARS)
+        end_year = _clamp_year(now.year + REPEAT_HORIZON_YEARS, end_allowed,
+                               now.year + REPEAT_HORIZON_YEARS)
+        if end_year < start_year:
+            end_year = start_year
+        logger.info(f"save_time_period {data['name']}: years "
+                    f"{start_year}–{end_year} (form allows "
+                    f"{start_allowed[0] if start_allowed else '?'}-"
+                    f"{end_allowed[-1] if end_allowed else '?'})")
+        payload["start_year"]  = str(start_year)
         payload["start_month"] = f"{now.month:02d}"
         payload["start_day"]   = f"{now.day:02d}"
-        payload["end_year"]    = str(end_dt.year)
-        payload["end_month"]   = f"{end_dt.month:02d}"
-        payload["end_day"]     = f"{end_dt.day:02d}"
+        payload["end_year"]    = str(end_year)
+        payload["end_month"]   = f"{now.month:02d}"
+        payload["end_day"]     = f"{now.day:02d}"
         payload["days_week"]   = data.get("days_week", [])
     elif data.get("date"):
         d = datetime.strptime(data["date"], "%Y-%m-%d")
-        payload["start_year"]  = str(d.year)
+        clamped = _clamp_year(d.year, start_allowed, d.year)
+        if clamped != d.year:
+            logger.warning(f"save_time_period {data['name']}: exception year "
+                           f"{d.year} outside form range, clamped to {clamped}")
+        payload["start_year"]  = str(clamped)
         payload["start_month"] = f"{d.month:02d}"
         payload["start_day"]   = f"{d.day:02d}"
-        payload["end_year"]    = str(d.year)
+        payload["end_year"]    = str(clamped)
         payload["end_month"]   = f"{d.month:02d}"
         payload["end_day"]     = f"{d.day:02d}"
         payload.pop("days_week", None)
@@ -266,6 +311,7 @@ def save_time_period(group_id: int, period_id: str | None, data: dict) -> bool:
     try:
         r = s.post(post_url, data=payload, timeout=TIMEOUT, allow_redirects=True)
     except Exception as e:
+        last_error = f"Telico request failed: {e}"
         logger.error(f"save_time_period {data['name']}: exception {e}")
         return False
 
@@ -277,6 +323,7 @@ def save_time_period(group_id: int, period_id: str | None, data: dict) -> bool:
         or "has been saved" in body_lc
         or "groups/edit" in final_url
     ):
+        last_error = ""
         logger.info(f"save_time_period {data['name']}: OK → {final_url}")
         return True
 
@@ -288,9 +335,10 @@ def save_time_period(group_id: int, period_id: str | None, data: dict) -> bool:
         or soup2.find(class_=re.compile(r"alert|danger", re.I))
     )
     if err_node:
-        logger.error(f"save_time_period {data['name']}: REJECTED — "
-                     f"{err_node.get_text(' ', strip=True)[:400]}")
+        last_error = err_node.get_text(" ", strip=True)[:400]
+        logger.error(f"save_time_period {data['name']}: REJECTED — {last_error}")
     else:
+        last_error = f"Telico rejected the save (status {r.status_code})"
         logger.error(f"save_time_period {data['name']}: rejected, "
                      f"url={final_url}, status={r.status_code}")
         try:

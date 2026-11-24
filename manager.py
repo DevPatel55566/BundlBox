@@ -2,7 +2,8 @@ import json
 import asyncio
 import time
 import logging
-from datetime import date as _date, timedelta
+from datetime import date as _date, datetime as _datetime, timedelta
+from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from database import connect
@@ -175,6 +176,7 @@ MANAGER_BODY = """
                 <button class="btn-primary" onclick="saveWeek(this)">SAVE WEEK</button>
             </div>
             <div class="days-list" id="weekly-hours"></div>
+            <div id="schedule-sync-status" style="margin-top:12px; font-size:13px; font-weight:600;"></div>
         </div>
         <div>
             <div style="font-size:18px; font-weight:700; color:#111827;">Add an exception</div>
@@ -460,6 +462,14 @@ function renderSchedule(){
       </div>
       `;
   }).join('');
+
+  const stEl = document.getElementById('schedule-sync-status');
+  if (stEl) {
+      const st = state.schedule.sync_status;
+      if (!st) { stEl.textContent = 'Not pushed to Telico yet — save the week to sync.'; stEl.style.color = '#6b7280'; }
+      else if (st.ok) { stEl.textContent = '✓ Synced to Telico — ' + st.at; stEl.style.color = '#15803d'; }
+      else { stEl.textContent = '⚠ Telico sync failed: ' + (st.detail || 'rejected'); stEl.style.color = '#b91c1c'; }
+  }
 
   const exWrap = document.getElementById('exceptions-list');
   if (exWrap) {
@@ -984,8 +994,28 @@ async def api_save_schedule(body: ScheduleBody, request: Request):
     c.execute("UPDATE schedule SET data=? WHERE id=1", (json.dumps(body.data),))
     c.commit()
 
+    async def _record_schedule_sync(failures: list):
+        # Persist the Telico push outcome on the schedule row so the Hours
+        # page can show whether the save actually reached Telico (a failed
+        # push used to be silent — the page said "saved" and nothing changed).
+        try:
+            c2 = connect()
+            row = c2.execute("SELECT data FROM schedule WHERE id=1").fetchone()
+            data2 = json.loads(row["data"]) if row else {}
+            data2["sync_status"] = {
+                "ok": not failures,
+                "at": _datetime.now(ZoneInfo("America/Toronto")).strftime("%b %d, %I:%M %p"),
+                "detail": "; ".join(failures) if failures else "All periods pushed to Telico",
+            }
+            c2.execute("UPDATE schedule SET data=? WHERE id=1", (json.dumps(data2),))
+            c2.commit()
+            await hub.broadcast({"type": "snapshot", "data": snapshot_full()})
+        except Exception as e:
+            log.error(f"Could not record schedule sync status: {e}")
+
     async def _push_to_telico(data: dict):
         log.info("--- STARTING TELICO SCHEDULE SYNC ---")
+        failures: list = []
         try:
             groups = await asyncio.to_thread(telico_client.fetch_time_groups)
             
@@ -1037,7 +1067,7 @@ async def api_save_schedule(body: ScheduleBody, request: Request):
 
                 if day_data.get("open"):
                     log.info(f"Pushing {short_day}  {day_data['start']} → {day_data['end']}")
-                    await asyncio.to_thread(
+                    ok = await asyncio.to_thread(
                         telico_client.save_time_period,
                         int(biz_group_id), existing_id,
                         {
@@ -1048,11 +1078,15 @@ async def api_save_schedule(body: ScheduleBody, request: Request):
                             "days_week": [mapping["dow"]],
                         },
                     )
+                    if not ok:
+                        failures.append(f"{short_day}: {telico_client.last_error or 'Telico rejected the save'}")
                 elif existing_id:
                     log.info(f"Deleting {short_day} (day closed)")
-                    await asyncio.to_thread(
+                    ok = await asyncio.to_thread(
                         telico_client.delete_time_period, existing_id, biz_group_id
                     )
+                    if not ok:
+                        failures.append(f"{short_day}: could not delete the old period in Telico")
 
             # ---- 2. EXCEPTIONS ----
             today = _date.today()
@@ -1082,7 +1116,7 @@ async def api_save_schedule(body: ScheduleBody, request: Request):
                 if ex_type == "open":
                     existing_id = biz_period_map.get(name.lower())
                     log.info(f"Pushing open-late {name} on {date_str}")
-                    await asyncio.to_thread(
+                    ok = await asyncio.to_thread(
                         telico_client.save_time_period,
                         int(biz_group_id), existing_id,
                         {
@@ -1093,13 +1127,17 @@ async def api_save_schedule(body: ScheduleBody, request: Request):
                             "date": date_str,
                         },
                     )
+                    if not ok:
+                        failures.append(f"{name}: {telico_client.last_error or 'Telico rejected the save'}")
 
                 elif ex_type == "closed" and exc_group_id:
                     existing_id = exc_period_map.get(name.lower())
-                    await asyncio.to_thread(
+                    ok = await asyncio.to_thread(
                         telico_exceptions.sync_closed_exception,
                         exc_group_id, name, date_str, existing_id
                     )
+                    if not ok:
+                        failures.append(f"{name}: {telico_client.last_error or 'Telico rejected the save'}")
 
             # ---- 3. RECONCILE ORPHANED PERIODS ----
             weekdays = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
@@ -1120,8 +1158,10 @@ async def api_save_schedule(body: ScheduleBody, request: Request):
                     await asyncio.to_thread(telico_client.delete_time_period, p["id"], exc_group_id)
 
             log.info("--- FINISHED TELICO SCHEDULE SYNC ---")
+            await _record_schedule_sync(failures)
         except Exception as e:
             log.error(f"FAILED to sync schedule to Telico: {e}", exc_info=True)
+            await _record_schedule_sync([f"Sync failed: {e}"])
 
     asyncio.create_task(_push_to_telico(body.data))
     await hub.broadcast({"type": "snapshot", "data": snapshot_full()})
