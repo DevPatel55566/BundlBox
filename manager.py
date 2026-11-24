@@ -1160,6 +1160,25 @@ async def api_save_schedule(body: ScheduleBody, request: Request):
                 exc_periods = await asyncio.to_thread(telico_client.fetch_time_periods, exc_group_id)
                 exc_period_map = {p["name"].lower(): p["id"] for p in exc_periods}
 
+            # Telico allows several periods with the same name. A save that
+            # could not see the existing periods once created a second full
+            # set of weekday periods; later saves only ever update one copy
+            # of each pair, so the extra copies stay forever. Drop the
+            # extras here, keeping the copy the name maps above point at
+            # (the last one listed), so a duplicate can never survive a save.
+            async def _dedupe_periods(periods, group_id, label):
+                seen = {}
+                for p in periods:
+                    seen.setdefault(p["name"].strip().lower(), []).append(p["id"])
+                for name_lc, ids in seen.items():
+                    for extra_id in ids[:-1]:
+                        log.info(f"Deleting duplicate period '{name_lc}' (id {extra_id}) from {label}")
+                        await asyncio.to_thread(telico_client.delete_time_period, extra_id, group_id)
+
+            await _dedupe_periods(biz_periods, int(biz_group_id), "Business Hours")
+            if exc_group_id:
+                await _dedupe_periods(exc_periods, exc_group_id, "Exceptions")
+
             log.info(f"Business periods: {list(biz_period_map.keys())}")
             log.info(f"Exception periods: {list(exc_period_map.keys())}")
 
