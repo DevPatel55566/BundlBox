@@ -518,6 +518,37 @@ window.saveOneDate = async (btn) => {
     document.getElementById(id)?.addEventListener('change', () => { oneDateDirty = true; updateOneDateSummary(); });
 });
 
+function renderAgents(){
+  const tb = document.getElementById('mgr-tbody');
+  if (!tb) return;
+  if (document.activeElement && document.activeElement.tagName === 'SELECT') return;
+
+  tb.innerHTML = state.agents.map((a, index)=>{
+    const statusCls = STATUS_CLASS[a.status] || 'st-offline';
+    return `
+    <tr>
+      <td class="agent-name-cell">
+        <div class="avatar">${index + 1}</div>
+        ${a.name}
+      </td>
+      <td class="mono" style="color:#6b7280">${a.phone}</td>
+      <td class="mono">${a.loginTime || '—'}</td>
+      <td class="mono">${a.logoutTime || '—'}</td>
+      <td><select class="status-pill-select ${statusCls}" onchange="changeStatus(${a.id}, this.value)">
+          ${STATUSES.map(s=>`<option value="${s}" ${s===a.status?'selected':''}>${s}</option>`).join('')}
+      </select></td>
+      <td class="mono">${fmtHHMM(a.statusSince)}</td>
+      <td class="mono" style="font-weight: 700;">${fmtHMS(a.shiftDurationSeconds)}</td>
+      ${['French','English','Delivery Line'].map(q=>`<td><button type="button" class="switch ${a.queues[q]?'on':''}" onclick="toggleQueue(event, ${a.id}, '${q}', ${!a.queues[q]})"></button></td>`).join('')}
+      <td style="white-space:nowrap;">
+        <button class="icon-btn" onclick="toggleAllQueues(${a.id}, true)" title="Join All">➜]</button>
+        <button class="icon-btn" onclick="toggleAllQueues(${a.id}, false)" title="Leave All">⇦]</button>
+        <button class="icon-btn" onclick="simulateBreak(${a.id})" title="Simulate Break">🧪</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
 function renderSchedule(){
   const wrap = document.getElementById('weekly-hours');
   if (!wrap || !state.schedule || !state.schedule.hours) return;
