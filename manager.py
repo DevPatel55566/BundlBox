@@ -79,7 +79,7 @@ button { font-family:inherit; cursor:pointer; border:none; background:none; colo
 @media (max-width: 900px) { .hours-container { grid-template-columns: 1fr; } }
 .days-list { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
 .day-row { display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb; }
-.day-row .day-name { font-weight: 600; font-size: 14px; width: 120px; display: flex; align-items: center; gap: 8px; }
+.day-row .day-name { font-weight: 600; font-size: 14px; width: 150px; display: flex; align-items: center; gap: 8px; }
 .day-row .time-inputs { display: flex; align-items: center; gap: 12px; }
 .day-row input[type="time"] { padding: 8px; width: 110px; background:#ffffff; border: 1px solid #d1d5db; color:#111827; border-radius: 4px; }
 .exceptions-list { margin-top: 20px; background:#ffffff; border: 1px solid #e5e7eb; border-radius: 8px; }
@@ -170,28 +170,30 @@ MANAGER_BODY = """
         <div>
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <div>
-                    <div style="font-size:18px; font-weight:700; color:#111827;">Weekly business hours</div>
-                    <div style="font-size:13px; color:#6b7280;">Set each day independently.</div>
+                    <div style="font-size:18px; font-weight:700; color:#111827;">Weekly hours</div>
+                    <div style="font-size:13px; color:#6b7280;">The regular week — or pick a week on the calendar to change just those dates.</div>
                 </div>
-                <button class="btn-primary" onclick="saveWeek(this)">SAVE WEEK</button>
+                <button class="btn-primary" id="week-save-btn" onclick="saveWeekTable(this)">SAVE WEEK</button>
             </div>
+            <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-top:12px; margin-bottom:8px;">
+                <div style="display:flex; flex-direction:column;">
+                    <label style="font-size:11px; font-weight:700; color:#6b7280; margin-bottom:4px;">SHOW</label>
+                    <select id="hours_mode" onchange="setHoursMode(this.value)">
+                        <option value="regular">Regular week</option>
+                        <option value="week">One week on the calendar</option>
+                    </select>
+                </div>
+                <div id="week_pick_wrap" style="display:none; flex-direction:column;">
+                    <label style="font-size:11px; font-weight:700; color:#6b7280; margin-bottom:4px;">PICK ANY DAY IN THE WEEK</label>
+                    <input type="date" id="week_date" onchange="showWeek()">
+                </div>
+                <button class="btn-primary" id="week_show_btn" onclick="showWeek()" style="display:none;">SHOW THAT WEEK</button>
+            </div>
+            <div id="week-label" style="font-size:15px; font-weight:700; color:#111827; margin-bottom:8px; display:none;"></div>
             <div class="days-list" id="weekly-hours"></div>
+            <div class="days-list" id="week-editor" style="display:none;"></div>
+            <div id="week-summary" style="font-size:13px; color:#6b7280; margin-top:8px; display:none;"></div>
             <div id="schedule-sync-status" style="margin-top:12px; font-size:13px; font-weight:600;"></div>
-            <div style="margin-top:24px;">
-                <div style="font-size:16px; font-weight:700; color:#111827;">Change hours for one week</div>
-                <div style="font-size:13px; color:#6b7280; margin-bottom:16px;">Pick any day in the week on the calendar, then set the times for those dates only. The regular weekly hours stay as they are.</div>
-                <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;">
-                    <div style="display:flex; flex-direction:column;">
-                        <label style="font-size:11px; font-weight:700; color:#6b7280; margin-bottom:4px;">PICK ANY DAY IN THE WEEK</label>
-                        <input type="date" id="week_date" onchange="showWeek()">
-                    </div>
-                    <button class="btn-primary" onclick="showWeek()">SHOW THAT WEEK</button>
-                </div>
-                <div id="week-label" style="font-size:15px; font-weight:700; color:#111827; margin-bottom:8px;"></div>
-                <div class="days-list" id="week-editor"></div>
-                <div id="week-summary" style="font-size:13px; color:#6b7280; margin-top:8px;"></div>
-                <button class="btn-primary" id="week-save-btn" onclick="saveWeekOverride(this)" style="margin-top:12px; display:none;">SAVE THIS WEEK'S HOURS</button>
-            </div>
         </div>
         <div>
             <div style="font-size:18px; font-weight:700; color:#111827;">Add an exception</div>
@@ -392,7 +394,7 @@ window.saveWeek = async (btn) => {
         if (r && r.ok) { showToast('Business hours saved — pushing to Telico…', 'ok'); hoursDirty = false; }
         else           showToast(r?.reason || 'Save failed', 'error');
     } finally {
-        if (btn) { btn.disabled = false; btn.textContent = 'SAVE WEEK'; }
+        if (btn) { btn.disabled = false; updateWeekSaveBtn(); }
     }
 };
 
@@ -478,9 +480,8 @@ window.showWeek = () => {
 function renderWeekEditor(){
     const wrap = document.getElementById('week-editor');
     const label = document.getElementById('week-label');
-    const saveBtn = document.getElementById('week-save-btn');
     if (!wrap) return;
-    if (!weekDays.length) { wrap.innerHTML = ''; if (label) label.textContent = ''; if (saveBtn) saveBtn.style.display = 'none'; return; }
+    if (!weekDays.length) { wrap.innerHTML = ''; if (label) label.textContent = ''; updateWeekSummary(); return; }
     if (label) label.textContent = 'Week of ' + weekDays[0].label + ', ' + weekDays[0].date.slice(0, 4) + ' to ' + weekDays[6].label + ', ' + weekDays[6].date.slice(0, 4);
     wrap.innerHTML = weekDays.map((wd, i) => `
     <div class="day-row">
@@ -491,8 +492,8 @@ function renderWeekEditor(){
         <input type="time" id="wend_${i}" value="${wd.end}" style="width:100px;">
       </div>
     </div>`).join('');
-    if (saveBtn) saveBtn.style.display = '';
     updateWeekSummary();
+    updateWeekSaveBtn();
 }
 
 function _weekEditorValues(i){
@@ -577,8 +578,44 @@ window.saveWeekOverride = async (btn) => {
             showToast(r?.reason || 'Save failed', 'error');
         }
     } finally {
-        if (btn) { btn.disabled = false; btn.textContent = "SAVE THIS WEEK'S HOURS"; }
+        if (btn) { btn.disabled = false; updateWeekSaveBtn(); }
     }
+};
+
+// --- One week table: Regular week vs one week on the calendar ---
+// A single table with one save button. Regular mode shows the recurring
+// weekday rows; week mode shows the 7 dates of the picked week. Only the
+// visible rows are ever saved.
+let hoursMode = 'regular';
+
+function updateWeekSaveBtn(){
+    const b = document.getElementById('week-save-btn');
+    if (b && !b.disabled) b.textContent = hoursMode === 'week' ? "SAVE THIS WEEK'S HOURS" : 'SAVE WEEK';
+}
+
+window.setHoursMode = (mode) => {
+    hoursMode = mode;
+    const isWeek = mode === 'week';
+    const pickWrap = document.getElementById('week_pick_wrap');
+    const showBtn = document.getElementById('week_show_btn');
+    const label = document.getElementById('week-label');
+    const summary = document.getElementById('week-summary');
+    const reg = document.getElementById('weekly-hours');
+    const wk = document.getElementById('week-editor');
+    if (pickWrap) pickWrap.style.display = isWeek ? 'flex' : 'none';
+    if (showBtn) showBtn.style.display = isWeek ? '' : 'none';
+    if (label) label.style.display = isWeek ? '' : 'none';
+    if (summary) summary.style.display = isWeek ? '' : 'none';
+    if (reg) reg.style.display = isWeek ? 'none' : '';
+    if (wk) wk.style.display = isWeek ? '' : 'none';
+    updateWeekSaveBtn();
+    if (isWeek) showWeek();
+    else renderSchedule();
+};
+
+window.saveWeekTable = (btn) => {
+    if (hoursMode === 'week') return saveWeekOverride(btn);
+    return saveWeek(btn);
 };
 
 function renderAgents(){
@@ -615,9 +652,6 @@ function renderAgents(){
 function renderSchedule(){
   const wrap = document.getElementById('weekly-hours');
   if (!wrap || !state.schedule || !state.schedule.hours) return;
-
-  // First time the schedule loads, open the current week in the week editor.
-  if (!weekDays.length && document.getElementById('week_date')?.value) showWeek();
 
   const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   if (!hoursDirty) wrap.innerHTML = days.map(d => {

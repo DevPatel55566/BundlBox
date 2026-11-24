@@ -493,7 +493,7 @@ def ensure_schedule_fresh():
     if not telico_client.is_configured():
         return
     now = time.time()
-    if now - _sched_sync_last_attempt < 300:
+    if now - _sched_sync_last_attempt < 120:
         return
     try:
         c = connect()
@@ -505,7 +505,7 @@ def ensure_schedule_fresh():
         return
     from_telico_at = data.get("from_telico_at")
     try:
-        if from_telico_at and now - float(from_telico_at) < 600:
+        if from_telico_at and now - float(from_telico_at) < 120:
             return
     except (TypeError, ValueError):
         pass
@@ -517,8 +517,14 @@ def ensure_schedule_fresh():
         if not sched:
             return
         sched["from_telico_at"] = now
-        if data.get("sync_status"):
-            sched["sync_status"] = data["sync_status"]
+        # Show that the displayed hours match Telico; a failed push warning
+        # recorded on this instance is kept instead of being overwritten.
+        prev_sync = data.get("sync_status")
+        if prev_sync and not prev_sync.get("ok"):
+            sched["sync_status"] = prev_sync
+        else:
+            sched["sync_status"] = {"ok": True, "at": now_local().strftime("%b %d, %I:%M %p"),
+                                    "detail": "Hours loaded from Telico"}
         c2 = connect()
         c2.execute("UPDATE schedule SET data=? WHERE id=1", (json.dumps(sched),))
         c2.commit()
