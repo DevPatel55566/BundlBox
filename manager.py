@@ -177,6 +177,21 @@ MANAGER_BODY = """
             </div>
             <div class="days-list" id="weekly-hours"></div>
             <div id="schedule-sync-status" style="margin-top:12px; font-size:13px; font-weight:600;"></div>
+            <div style="margin-top:24px;">
+                <div style="font-size:16px; font-weight:700; color:#111827;">Change hours for one week</div>
+                <div style="font-size:13px; color:#6b7280; margin-bottom:16px;">Pick any day in the week on the calendar, then set the times for those dates only. The regular weekly hours stay as they are.</div>
+                <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;">
+                    <div style="display:flex; flex-direction:column;">
+                        <label style="font-size:11px; font-weight:700; color:#6b7280; margin-bottom:4px;">PICK ANY DAY IN THE WEEK</label>
+                        <input type="date" id="week_date" onchange="showWeek()">
+                    </div>
+                    <button class="btn-primary" onclick="showWeek()">SHOW THAT WEEK</button>
+                </div>
+                <div id="week-label" style="font-size:15px; font-weight:700; color:#111827; margin-bottom:8px;"></div>
+                <div class="days-list" id="week-editor"></div>
+                <div id="week-summary" style="font-size:13px; color:#6b7280; margin-top:8px;"></div>
+                <button class="btn-primary" id="week-save-btn" onclick="saveWeekOverride(this)" style="margin-top:12px; display:none;">SAVE THIS WEEK'S HOURS</button>
+            </div>
         </div>
         <div>
             <div style="font-size:18px; font-weight:700; color:#111827;">Add an exception</div>
@@ -206,21 +221,6 @@ MANAGER_BODY = """
             <div style="font-size:18px; font-weight:700; color:#111827; margin-top:30px;">Scheduled exceptions</div>
             <div class="exceptions-list" id="exceptions-list"></div>
         </div>
-    </div>
-    <div style="margin-top:28px; border-top:1px solid #e5e7eb; padding-top:20px;">
-        <div style="font-size:18px; font-weight:700; color:#111827;">Change hours for one week</div>
-        <div style="font-size:13px; color:#6b7280; margin-bottom:16px;">Pick any day in the week on the calendar, then set the times for those dates only. The regular weekly hours stay as they are.</div>
-        <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;">
-            <div style="display:flex; flex-direction:column;">
-                <label style="font-size:11px; font-weight:700; color:#6b7280; margin-bottom:4px;">PICK ANY DAY IN THE WEEK</label>
-                <input type="date" id="week_date" onchange="showWeek()">
-            </div>
-            <button class="btn-primary" onclick="showWeek()">SHOW THAT WEEK</button>
-        </div>
-        <div id="week-label" style="font-size:15px; font-weight:700; color:#111827; margin-bottom:8px;"></div>
-        <div class="days-list" id="week-editor"></div>
-        <div id="week-summary" style="font-size:13px; color:#6b7280; margin-top:8px;"></div>
-        <button class="btn-primary" id="week-save-btn" onclick="saveWeekOverride(this)" style="margin-top:12px; display:none;">SAVE THIS WEEK'S HOURS</button>
     </div>
   </div>
 
