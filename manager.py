@@ -207,6 +207,21 @@ MANAGER_BODY = """
             <div class="exceptions-list" id="exceptions-list"></div>
         </div>
     </div>
+    <div style="margin-top:28px; border-top:1px solid #e5e7eb; padding-top:20px;">
+        <div style="font-size:18px; font-weight:700; color:#111827;">Change hours for one week</div>
+        <div style="font-size:13px; color:#6b7280; margin-bottom:16px;">Pick any day in the week on the calendar, then set the times for those dates only. The regular weekly hours stay as they are.</div>
+        <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;">
+            <div style="display:flex; flex-direction:column;">
+                <label style="font-size:11px; font-weight:700; color:#6b7280; margin-bottom:4px;">PICK ANY DAY IN THE WEEK</label>
+                <input type="date" id="week_date" onchange="showWeek()">
+            </div>
+            <button class="btn-primary" onclick="showWeek()">SHOW THAT WEEK</button>
+        </div>
+        <div id="week-label" style="font-size:15px; font-weight:700; color:#111827; margin-bottom:8px;"></div>
+        <div class="days-list" id="week-editor"></div>
+        <div id="week-summary" style="font-size:13px; color:#6b7280; margin-top:8px;"></div>
+        <button class="btn-primary" id="week-save-btn" onclick="saveWeekOverride(this)" style="margin-top:12px; display:none;">SAVE THIS WEEK'S HOURS</button>
+    </div>
   </div>
 
   <div class="section">
@@ -284,6 +299,11 @@ let currentMetrics = [];
 let hoursDirty = false;
 document.getElementById('weekly-hours')?.addEventListener('input', () => { hoursDirty = true; });
 document.getElementById('weekly-hours')?.addEventListener('change', () => { hoursDirty = true; });
+
+// Week editor: default the calendar to today and keep its summary live.
+(function(){ const el = document.getElementById('week_date'); if (el && !el.value) { const n = new Date(); el.value = n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0'); } })();
+document.getElementById('week-editor')?.addEventListener('input', updateWeekSummary);
+document.getElementById('week-editor')?.addEventListener('change', updateWeekSummary);
 
 async function api(path, body) {
   const r = await fetch(path, { method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'}, body: body?JSON.stringify(body):undefined });
@@ -415,6 +435,152 @@ window.removeException = async (btn, idx) => {
     }
 };
 
+// --- Change hours for one week (date-specific overrides) ---
+// The week picker builds 7 rows, one per date, pre-filled from the hours that
+// already apply that day (regular weekly hours, or an existing exception).
+// Saving stores only the days that actually changed, as date exceptions,
+// which the existing Telico push already sends as one-off periods.
+const WEEK_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+let weekDays = []; // [{date, label, open, start, end}] pre-filled effective hours
+
+function _weekISO(dt){ return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0'); }
+function _weekLabel(dt, dayName){ return dayName.slice(0, 3) + ', ' + dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
+
+window.showWeek = () => {
+    const v = document.getElementById('week_date')?.value;
+    if (!v) { showToast('Pick a date in the week first', 'error'); return; }
+    const picked = new Date(v + 'T12:00:00');
+    if (isNaN(picked)) { showToast('That date is not valid', 'error'); return; }
+    const monday = new Date(picked);
+    monday.setDate(picked.getDate() - ((picked.getDay() + 6) % 7));
+    const hours = (state.schedule && state.schedule.hours) || {};
+    const exs = (state.schedule && state.schedule.exceptions) || [];
+    weekDays = [];
+    for (let i = 0; i < 7; i++) {
+        const dt = new Date(monday);
+        dt.setDate(monday.getDate() + i);
+        const iso = _weekISO(dt);
+        const rec = hours[WEEK_DAYS[i]] || { open: false, start: '09:00', end: '17:00' };
+        const ex = exs.find(e => e.date === iso);
+        let open, start, end;
+        if (ex) {
+            open = ex.type !== 'closed';
+            start = ex.start || rec.start;
+            end = ex.end || rec.end;
+        } else {
+            open = !!rec.open; start = rec.start; end = rec.end;
+        }
+        weekDays.push({ date: iso, label: _weekLabel(dt, WEEK_DAYS[i]), open, start, end });
+    }
+    renderWeekEditor();
+};
+
+function renderWeekEditor(){
+    const wrap = document.getElementById('week-editor');
+    const label = document.getElementById('week-label');
+    const saveBtn = document.getElementById('week-save-btn');
+    if (!wrap) return;
+    if (!weekDays.length) { wrap.innerHTML = ''; if (label) label.textContent = ''; if (saveBtn) saveBtn.style.display = 'none'; return; }
+    if (label) label.textContent = 'Week of ' + weekDays[0].label + ' to ' + weekDays[6].label + ', ' + weekDays[0].date.slice(0, 4);
+    wrap.innerHTML = weekDays.map((wd, i) => `
+    <div class="day-row">
+      <div class="day-name"><input type="checkbox" id="wchk_${i}" ${wd.open ? 'checked' : ''}> ${wd.label.toUpperCase()}</div>
+      <div class="time-inputs">
+        <input type="time" id="wstart_${i}" value="${wd.start}" style="width:100px;">
+        <span>to</span>
+        <input type="time" id="wend_${i}" value="${wd.end}" style="width:100px;">
+      </div>
+    </div>`).join('');
+    if (saveBtn) saveBtn.style.display = '';
+    updateWeekSummary();
+}
+
+function _weekEditorValues(i){
+    return {
+        open: document.getElementById('wchk_' + i).checked,
+        start: document.getElementById('wstart_' + i).value,
+        end: document.getElementById('wend_' + i).value
+    };
+}
+
+// True when the edited hours sit entirely inside the regular hours for that
+// day: a one-off period can only add hours, so such a change would do nothing.
+function _weekIsSubset(v, rec){
+    return v.open && !!rec.open && v.start >= rec.start && v.end <= rec.end && (v.start !== rec.start || v.end !== rec.end);
+}
+
+function updateWeekSummary(){
+    const el = document.getElementById('week-summary');
+    if (!el) return;
+    if (!weekDays.length) { el.textContent = ''; return; }
+    const hours = (state.schedule && state.schedule.hours) || {};
+    let n = 0;
+    const subsets = [];
+    for (let i = 0; i < 7; i++) {
+        const v = _weekEditorValues(i);
+        const rec = hours[WEEK_DAYS[i]] || { open: false, start: '09:00', end: '17:00' };
+        if (v.open !== !!rec.open || v.start !== rec.start || v.end !== rec.end) n++;
+        if (_weekIsSubset(v, rec)) subsets.push(weekDays[i].label + ' (' + v.start + '–' + v.end + ') is inside the regular ' + rec.start + '–' + rec.end);
+    }
+    let text = n === 0
+        ? 'No days differ from the regular weekly hours — nothing to change for this week.'
+        : n + (n === 1 ? ' day' : ' days') + ' will change for this week. The rest keep the regular hours.';
+    if (subsets.length) text += ' Note: ' + subsets.join('; ') + ' — the regular hours will still apply that day, so it will not be saved as a change.';
+    el.textContent = text;
+}
+
+window.saveWeekOverride = async (btn) => {
+    if (!weekDays.length) { showToast('Pick a week first', 'error'); return; }
+    if (btn) { btn.disabled = true; btn.textContent = 'SAVING...'; }
+    try {
+        const hours = (state.schedule && state.schedule.hours) || {};
+        let exs = [...((state.schedule && state.schedule.exceptions) || [])];
+        let changed = 0;
+        const skipped = [];
+        for (let i = 0; i < 7; i++) {
+            const wd = weekDays[i];
+            const v = _weekEditorValues(i);
+            if (v.open && v.start >= v.end) {
+                showToast(wd.label + ': end time must be after start time', 'error');
+                return;
+            }
+            // Unchanged from what was shown: leave any existing entry for this date alone.
+            if (v.open === wd.open && v.start === wd.start && v.end === wd.end) continue;
+            const rec = hours[WEEK_DAYS[i]] || { open: false, start: '09:00', end: '17:00' };
+            // Inside the regular hours: a one-off period would change nothing, so skip it.
+            if (_weekIsSubset(v, rec)) { skipped.push(wd.label); continue; }
+            changed++;
+            exs = exs.filter(e => e.date !== wd.date);
+            // Back to the regular hours: the override is removed, nothing new is stored.
+            if (v.open === !!rec.open && v.start === rec.start && v.end === rec.end) continue;
+            if (!v.open) exs.push({ type: 'closed', date: wd.date, name: wd.date + ' closed', start: '00:00', end: '23:59' });
+            else exs.push({ type: 'open', date: wd.date, name: wd.date + ' hours', start: v.start, end: v.end });
+        }
+        if (!changed) {
+            if (skipped.length) showToast('Nothing saved — ' + skipped.join(', ') + ' sit inside the regular hours, so the regular hours still apply', 'error');
+            else showToast('Nothing changed for this week', 'ok');
+            return;
+        }
+        const data = { ...(state.schedule || {}), exceptions: exs };
+        const r = await api('/api/settings/schedule', { data });
+        if (r && r.ok) {
+            let msg = changed + (changed === 1 ? ' day' : ' days') + ' saved for the week of ' + weekDays[0].label + ' — pushing to Telico…';
+            if (skipped.length) msg += ' (' + skipped.join(', ') + ' not saved: inside the regular hours.)';
+            showToast(msg, 'ok');
+            // Re-read the saved values so a second edit compares against the new state.
+            for (let i = 0; i < 7; i++) {
+                const v = _weekEditorValues(i);
+                weekDays[i].open = v.open; weekDays[i].start = v.start; weekDays[i].end = v.end;
+            }
+            updateWeekSummary();
+        } else {
+            showToast(r?.reason || 'Save failed', 'error');
+        }
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "SAVE THIS WEEK'S HOURS"; }
+    }
+};
+
 function renderAgents(){
   const tb = document.getElementById('mgr-tbody');
   if (!tb) return;
@@ -449,6 +615,9 @@ function renderAgents(){
 function renderSchedule(){
   const wrap = document.getElementById('weekly-hours');
   if (!wrap || !state.schedule || !state.schedule.hours) return;
+
+  // First time the schedule loads, open the current week in the week editor.
+  if (!weekDays.length && document.getElementById('week_date')?.value) showWeek();
 
   const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   if (!hoursDirty) wrap.innerHTML = days.map(d => {
