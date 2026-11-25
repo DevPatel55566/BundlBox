@@ -485,8 +485,12 @@ window.saveOneDate = async (btn) => {
     try {
         let exs = [...((state.schedule && state.schedule.exceptions) || [])];
         exs = exs.filter(e => e.date !== date);
-        // Back to the regular hours: the override is removed, nothing new is stored.
-        if (!(open === !!rec.open && start === rec.start && end === rec.end)) {
+        // Back to the regular hours: the override is removed, nothing new is
+        // stored. A closed day whose regular hours are also closed is back
+        // to regular whatever the time fields still hold, so it is not
+        // stored as a closed exception.
+        const backToRegular = (!open && !rec.open) || (open === !!rec.open && start === rec.start && end === rec.end);
+        if (!backToRegular) {
             if (!open) exs.push({ type: 'closed', date, name: name || date + ' closed', start: '00:00', end: '23:59' });
             else exs.push({ type: 'open', date, name: name || date + ' hours', start, end });
         }
