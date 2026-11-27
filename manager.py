@@ -173,7 +173,7 @@ MANAGER_BODY = """
                     <div style="font-size:18px; font-weight:700; color:#111827;">Weekly hours</div>
                     <div style="font-size:13px; color:#6b7280;">The regular week — the same days every time. To change one date, use the box below.</div>
                 </div>
-                <button id="save-week-btn" class="btn-primary" onclick="saveWeek(this)">SAVE WEEK</button>
+                <button id="save-week-btn" class="btn-primary" onclick="saveWeek(this)" disabled>SAVE WEEK</button>
             </div>
             <div class="days-list" id="weekly-hours"></div>
             <div id="schedule-sync-status" style="margin-top:12px; font-size:13px; font-weight:600;"></div>
@@ -203,7 +203,7 @@ MANAGER_BODY = """
                     </div>
                 </div>
                 <div id="one_summary" style="font-size:13px; color:#6b7280; margin-top:10px;"></div>
-                <button id="save-one-date-btn" class="btn-primary" onclick="saveOneDate(this)" style="margin-top:12px;">SAVE THIS DATE</button>
+                <button id="save-one-date-btn" class="btn-primary" onclick="saveOneDate(this)" style="margin-top:12px;" disabled>SAVE THIS DATE</button>
             </div>
         </div>
         <div>
@@ -569,12 +569,15 @@ function renderAgents(){
 
 function renderSchedule(){
   const wrap = document.getElementById('weekly-hours');
-  if (!wrap || !state.schedule || !state.schedule.hours) return;
+  if (!wrap || !state.schedule) return;
   if (scheduleIsReal(state.schedule)) scheduleReady = true;
 
   const saveWeekBtn = document.getElementById('save-week-btn');
   const saveDateBtn = document.getElementById('save-one-date-btn');
-  if (!scheduleReady) {
+  // No hours yet (a fresh instance still holding the untouched default,
+  // which stores `week` not `hours`) is the same as not ready: show the
+  // loading note instead of a blank section, and keep the saves blocked.
+  if (!scheduleReady || !state.schedule.hours) {
       wrap.innerHTML = '<div style="padding:12px; font-size:13px; color:#6b7280;">Loading hours from Telico… please wait before changing anything.</div>';
       const stEl = document.getElementById('schedule-sync-status');
       if (stEl) { stEl.textContent = 'Loading hours from Telico…'; stEl.style.color = '#6b7280'; }
@@ -1138,6 +1141,7 @@ async def api_save_schedule(body: ScheduleBody, request: Request):
     # Mark the save as the manager's own, so a later Telico rebuild on a fresh
     # instance never overwrites hours the manager set here.
     body.data["user_saved"] = True
+    body.data["saved_at"] = time.time()
     body.data.pop("from_telico_at", None)
     c = connect()
     c.execute("UPDATE schedule SET data=? WHERE id=1", (json.dumps(body.data),))

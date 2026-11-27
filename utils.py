@@ -501,8 +501,19 @@ def ensure_schedule_fresh():
         data = json.loads(row["data"]) if row else {}
     except Exception:
         return
+    # A schedule the manager saved on THIS instance is the freshest truth
+    # for a short while (its push to Telico is still in flight or just
+    # finished). After that, Telico is the shared truth again: re-check it,
+    # so an instance that served an older save cannot keep serving stale
+    # hours forever while other instances moved on (that is how Saturday
+    # kept flip-flopping between loads on Nov 27).
     if data.get("user_saved"):
-        return
+        try:
+            saved_at = float(data.get("saved_at") or 0)
+        except (TypeError, ValueError):
+            saved_at = 0
+        if now - saved_at < 300:
+            return
     from_telico_at = data.get("from_telico_at")
     try:
         if from_telico_at and now - float(from_telico_at) < 120:
