@@ -173,7 +173,7 @@ MANAGER_BODY = """
                     <div style="font-size:18px; font-weight:700; color:#111827;">Weekly hours</div>
                     <div style="font-size:13px; color:#6b7280;">The regular week — the same days every time. To change one date, use the box below.</div>
                 </div>
-                <button class="btn-primary" onclick="saveWeek(this)">SAVE WEEK</button>
+                <button id="save-week-btn" class="btn-primary" onclick="saveWeek(this)">SAVE WEEK</button>
             </div>
             <div class="days-list" id="weekly-hours"></div>
             <div id="schedule-sync-status" style="margin-top:12px; font-size:13px; font-weight:600;"></div>
@@ -203,7 +203,7 @@ MANAGER_BODY = """
                     </div>
                 </div>
                 <div id="one_summary" style="font-size:13px; color:#6b7280; margin-top:10px;"></div>
-                <button class="btn-primary" onclick="saveOneDate(this)" style="margin-top:12px;">SAVE THIS DATE</button>
+                <button id="save-one-date-btn" class="btn-primary" onclick="saveOneDate(this)" style="margin-top:12px;">SAVE THIS DATE</button>
             </div>
         </div>
         <div>
@@ -290,6 +290,17 @@ let hoursDirty = false;
 document.getElementById('weekly-hours')?.addEventListener('input', () => { hoursDirty = true; });
 document.getElementById('weekly-hours')?.addEventListener('change', () => { hoursDirty = true; });
 
+// A fresh Vercel instance first serves the untouched default schedule
+// (Saturday closed, Friday 15:00), not the real hours — the real hours
+// arrive from Telico about a minute later. Until they have arrived, the
+// form must not be saved: a save in that window stores the defaults and
+// Telico drops the Saturday period. A schedule counts as real once it
+// carries a sync status, a save stamp, or a Telico rebuild stamp.
+let scheduleReady = false;
+function scheduleIsReal(s) {
+    return !!(s && (s.sync_status || s.user_saved || s.from_telico_at));
+}
+
 // The single-date form is set up with the one-date code below (default date,
 // pre-fill from the hours that apply, and its summary).
 
@@ -361,6 +372,7 @@ window.massQueue = async (queues, on) => { await api('/api/queues/mass', {queues
 window.simulateBreak = async (agentId) => { const r = await fetch(`/api/debug/telico/simulate-break?agent_id=${agentId}`, {method: 'POST', credentials: 'include'}).then(x=>x.json()); if(r.ok) showToast('Simulating break...', 'ok'); };
 
 window.saveWeek = async (btn) => {
+    if (!scheduleReady) { showToast('Hours are still loading from Telico — wait a moment and try again.', 'error'); return; }
     if (btn) { btn.disabled = true; btn.textContent = 'SAVING...'; }
     try {
         const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -385,6 +397,7 @@ window.saveWeek = async (btn) => {
 };
 
 window.removeException = async (btn, idx) => {
+    if (!scheduleReady) { showToast('Hours are still loading from Telico — wait a moment and try again.', 'error'); return; }
     if (btn) { btn.disabled = true; }
     try {
         const exs = [...((state.schedule?.exceptions) || [])];
@@ -463,6 +476,7 @@ window.updateOneDateSummary = () => {
 };
 
 window.saveOneDate = async (btn) => {
+    if (!scheduleReady) { showToast('Hours are still loading from Telico — wait a moment and try again.', 'error'); return; }
     const dateEl = document.getElementById('one_date');
     if (!dateEl || !dateEl.value) { showToast('Pick a date first', 'error'); return; }
     const date = dateEl.value;
@@ -556,6 +570,20 @@ function renderAgents(){
 function renderSchedule(){
   const wrap = document.getElementById('weekly-hours');
   if (!wrap || !state.schedule || !state.schedule.hours) return;
+  if (scheduleIsReal(state.schedule)) scheduleReady = true;
+
+  const saveWeekBtn = document.getElementById('save-week-btn');
+  const saveDateBtn = document.getElementById('save-one-date-btn');
+  if (!scheduleReady) {
+      wrap.innerHTML = '<div style="padding:12px; font-size:13px; color:#6b7280;">Loading hours from Telico… please wait before changing anything.</div>';
+      const stEl = document.getElementById('schedule-sync-status');
+      if (stEl) { stEl.textContent = 'Loading hours from Telico…'; stEl.style.color = '#6b7280'; }
+      if (saveWeekBtn) saveWeekBtn.disabled = true;
+      if (saveDateBtn) saveDateBtn.disabled = true;
+      return;
+  }
+  if (saveWeekBtn && saveWeekBtn.textContent === 'SAVE WEEK') saveWeekBtn.disabled = false;
+  if (saveDateBtn && saveDateBtn.textContent === 'SAVE THIS DATE') saveDateBtn.disabled = false;
 
   const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   if (!hoursDirty) wrap.innerHTML = days.map(d => {
